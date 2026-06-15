@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS words (
 def _get_db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
     con.executescript(_SCHEMA)
     con.commit()
     return con
@@ -63,8 +64,14 @@ def _get_db() -> sqlite3.Connection:
 
 app = FastAPI(title="PodcastCard", version="2.0.0")
 
-# Mount static files (CSS/JS assets served from /static/*)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Mount static files (CSS/JS assets served from /static/*).
+# Build the path from this file's location so the server starts regardless of
+# the current working directory, and skip the mount if the dir is absent.
+_STATIC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static"
+)
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +154,25 @@ def _save_episode(url: str, title: str, words: list[dict]) -> int:
     con = _get_db()
     try:
         now = datetime.now(timezone.utc).isoformat()
-        cur = con.execute(
-            "INSERT OR REPLACE INTO episodes (url, title, created_at) VALUES (?, ?, ?)",
-            (url, title, now),
-        )
-        episode_id = cur.lastrowid
+
+        # Reuse the existing episode id when the URL was analysed before, so the
+        # row's id is stable and its old words can be cleaned up. (INSERT OR
+        # REPLACE would allocate a new id and orphan the previous words.)
+        existing = con.execute(
+            "SELECT id FROM episodes WHERE url = ?", (url,)
+        ).fetchone()
+        if existing is None:
+            cur = con.execute(
+                "INSERT INTO episodes (url, title, created_at) VALUES (?, ?, ?)",
+                (url, title, now),
+            )
+            episode_id = cur.lastrowid
+        else:
+            episode_id = existing["id"]
+            con.execute(
+                "UPDATE episodes SET title = ?, created_at = ? WHERE id = ?",
+                (title, now, episode_id),
+            )
 
         # Delete old words if episode already existed
         con.execute("DELETE FROM words WHERE episode_id = ?", (episode_id,))
@@ -257,8 +278,10 @@ async def get_episode_words(
 
 
 @app.get("/episodes/{episode_id}/export.csv")
-async def export_csv(episode_id: int):
-    """Export episode words as CSV download."""
+async def export_csv(
+    episode_id: int, hsk_levels: Optional[str] = Query(default=None)
+):
+    """Export episode words as CSV download, optionally filtered by HSK level."""
     con = _get_db()
     try:
         ep = con.execute(
@@ -267,11 +290,21 @@ async def export_csv(episode_id: int):
         if ep is None:
             raise HTTPException(status_code=404, detail="Episode not found")
 
-        rows = con.execute(
-            "SELECT word, pinyin, hsk_level, frequency, contexts FROM words "
-            "WHERE episode_id = ? ORDER BY hsk_level, word",
-            (episode_id,),
-        ).fetchall()
+        levels_filter = _parse_hsk_levels(hsk_levels or "all")
+        if levels_filter is not None:
+            placeholders = ",".join("?" * len(levels_filter))
+            rows = con.execute(
+                "SELECT word, pinyin, hsk_level, frequency, contexts FROM words "
+                f"WHERE episode_id = ? AND hsk_level IN ({placeholders}) "
+                "ORDER BY hsk_level, word",
+                [episode_id, *levels_filter],
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT word, pinyin, hsk_level, frequency, contexts FROM words "
+                "WHERE episode_id = ? ORDER BY hsk_level, word",
+                (episode_id,),
+            ).fetchall()
     finally:
         con.close()
 
