@@ -5,3 +5,6 @@ pypinyin
 typer[all]
 rich
 pydantic
+fastapi
+uvicorn[standard]
+python-multipart
