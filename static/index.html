@@ -1,621 +1,956 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PodcastCard — Mandarin Vocabulary Extractor</title>
-<style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PodcastCard</title>
+  <style>
+    /* ------------------------------------------------------------------ Reset */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  :root {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface2: #22263a;
-    --border: #2e3350;
-    --accent: #5c7cfa;
-    --accent-dim: #3d5af1;
-    --text: #e2e8f0;
-    --text-dim: #8892a4;
-    --green: #4ade80;
-    --yellow: #fbbf24;
-    --red: #f87171;
-    --hsk1: #4ade80; --hsk2: #34d399; --hsk3: #22d3ee;
-    --hsk4: #818cf8; --hsk5: #c084fc; --hsk6: #f472b6; --hsk0: #94a3b8;
-  }
+    /* ------------------------------------------------------------------ Variables */
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d27;
+      --surface2:  #22263a;
+      --border:    #2e3250;
+      --accent:    #6c63ff;
+      --accent2:   #a78bfa;
+      --text:      #e2e8f0;
+      --text-muted:#8892a4;
+      --danger:    #f87171;
+      --success:   #34d399;
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    font-size: 15px;
-    line-height: 1.6;
-    display: flex;
-    height: 100vh;
-    overflow: hidden;
-  }
+      --hsk1: #22c55e;
+      --hsk2: #84cc16;
+      --hsk3: #eab308;
+      --hsk4: #f97316;
+      --hsk5: #ef4444;
+      --hsk6: #a855f7;
+      --hsk0: #6b7280;
 
-  /* ── Sidebar ── */
-  #sidebar {
-    width: 260px;
-    min-width: 260px;
-    background: var(--surface);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
+      --radius: 10px;
+      --radius-sm: 6px;
+      --transition: 150ms ease;
+    }
 
-  #sidebar h2 {
-    padding: 18px 16px 14px;
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: .08em;
-    color: var(--text-dim);
-    border-bottom: 1px solid var(--border);
-  }
+    /* ------------------------------------------------------------------ Base */
+    html { font-size: 16px; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
 
-  #episode-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px 0;
-  }
+    a { color: var(--accent2); text-decoration: none; }
+    a:hover { text-decoration: underline; }
 
-  .episode-item {
-    padding: 10px 16px;
-    cursor: pointer;
-    border-left: 3px solid transparent;
-    transition: background .15s;
-  }
+    h1, h2, h3 { line-height: 1.3; }
 
-  .episode-item:hover { background: var(--surface2); }
-  .episode-item.active { border-left-color: var(--accent); background: var(--surface2); }
+    /* ------------------------------------------------------------------ Layout */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      height: 56px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
 
-  .episode-item .ep-title {
-    font-size: 13px;
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+    header h1 {
+      font-size: 1.25rem;
+      background: linear-gradient(135deg, var(--accent2), var(--accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
 
-  .episode-item .ep-date {
-    font-size: 11px;
-    color: var(--text-dim);
-    margin-top: 2px;
-  }
+    header .tagline {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
 
-  /* ── Main ── */
-  #main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
+    .layout {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      flex: 1;
+      min-height: 0;
+    }
 
-  header {
-    padding: 20px 28px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-  }
+    /* ------------------------------------------------------------------ Sidebar */
+    #sidebar {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
 
-  header h1 {
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--text);
-    margin-bottom: 14px;
-  }
+    #sidebar h2 {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 16px 16px 8px;
+    }
 
-  header h1 span { color: var(--accent); }
+    #episode-list {
+      list-style: none;
+      overflow-y: auto;
+      flex: 1;
+    }
 
-  /* ── Form ── */
-  #analyze-form {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: flex-end;
-  }
+    #episode-list li {
+      border-bottom: 1px solid var(--border);
+    }
 
-  #url-input {
-    flex: 1;
-    min-width: 240px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    padding: 9px 14px;
-    font-size: 14px;
-    outline: none;
-    transition: border-color .2s;
-  }
+    #episode-list button {
+      width: 100%;
+      background: none;
+      border: none;
+      padding: 12px 16px;
+      text-align: left;
+      cursor: pointer;
+      color: var(--text);
+      transition: background var(--transition);
+    }
 
-  #url-input:focus { border-color: var(--accent); }
-  #url-input::placeholder { color: var(--text-dim); }
+    #episode-list button:hover,
+    #episode-list button.active {
+      background: var(--surface2);
+    }
 
-  select {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    padding: 9px 12px;
-    font-size: 14px;
-    outline: none;
-    cursor: pointer;
-  }
+    #episode-list .ep-title {
+      font-size: 0.875rem;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: block;
+    }
 
-  .hsk-checks {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
+    #episode-list .ep-date {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: block;
+      margin-top: 2px;
+    }
 
-  .hsk-checks label {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 13px;
-    cursor: pointer;
-    padding: 6px 10px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    transition: border-color .15s;
-  }
+    #sidebar-empty {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      padding: 16px;
+      text-align: center;
+    }
 
-  .hsk-checks label:hover { border-color: var(--accent); }
+    /* ------------------------------------------------------------------ Main */
+    #main {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
 
-  .hsk-checks input[type=checkbox] { accent-color: var(--accent); }
+    /* ------------------------------------------------------------------ Form */
+    #form-section {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 20px 24px;
+    }
 
-  button.btn-primary {
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    padding: 9px 22px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background .15s;
-    white-space: nowrap;
-  }
+    .form-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
 
-  button.btn-primary:hover { background: var(--accent-dim); }
-  button.btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
 
-  /* ── Progress ── */
-  #progress-area {
-    display: none;
-    padding: 16px 28px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-  }
+    .form-group label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
 
-  .stages {
-    display: flex;
-    gap: 6px;
-    margin-bottom: 10px;
-  }
+    .url-group { flex: 1; min-width: 260px; }
 
-  .stage-pill {
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
-    background: var(--surface2);
-    color: var(--text-dim);
-    border: 1px solid var(--border);
-    transition: all .2s;
-  }
+    input[type="text"],
+    select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 0.95rem;
+      padding: 9px 12px;
+      outline: none;
+      transition: border-color var(--transition);
+      width: 100%;
+    }
 
-  .stage-pill.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .stage-pill.done { background: #166534; color: var(--green); border-color: #166534; }
-  .stage-pill.error { background: #7f1d1d; color: var(--red); border-color: #7f1d1d; }
+    input[type="text"]:focus,
+    select:focus {
+      border-color: var(--accent);
+    }
 
-  #progress-msg { font-size: 13px; color: var(--text-dim); }
+    select {
+      cursor: pointer;
+      min-width: 130px;
+    }
 
-  /* ── Results ── */
-  #results-area {
-    flex: 1;
-    overflow-y: auto;
-    padding: 20px 28px;
-    display: none;
-  }
+    /* HSK level checkboxes */
+    .hsk-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
 
-  #results-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 16px;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
+    .hsk-checkboxes {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
 
-  #results-summary { font-size: 14px; color: var(--text-dim); }
+    .hsk-check {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 5px 10px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      transition: background var(--transition), border-color var(--transition);
+      user-select: none;
+    }
 
-  .btn-secondary {
-    background: var(--surface2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    padding: 7px 16px;
-    font-size: 13px;
-    cursor: pointer;
-    text-decoration: none;
-    transition: border-color .15s;
-  }
+    .hsk-check input { display: none; }
 
-  .btn-secondary:hover { border-color: var(--accent); }
+    .hsk-check:has(input:checked) { border-color: transparent; }
 
-  /* Filter tabs */
-  #level-tabs {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-bottom: 18px;
-  }
+    .hsk-check[data-level="1"]:has(input:checked) { background: var(--hsk1); color: #000; }
+    .hsk-check[data-level="2"]:has(input:checked) { background: var(--hsk2); color: #000; }
+    .hsk-check[data-level="3"]:has(input:checked) { background: var(--hsk3); color: #000; }
+    .hsk-check[data-level="4"]:has(input:checked) { background: var(--hsk4); color: #fff; }
+    .hsk-check[data-level="5"]:has(input:checked) { background: var(--hsk5); color: #fff; }
+    .hsk-check[data-level="6"]:has(input:checked) { background: var(--hsk6); color: #fff; }
+    .hsk-check[data-level="0"]:has(input:checked) { background: var(--hsk0); color: #fff; }
 
-  .level-tab {
-    padding: 5px 14px;
-    border-radius: 20px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    border: 2px solid transparent;
-    background: var(--surface2);
-    color: var(--text-dim);
-    transition: all .15s;
-  }
+    /* Analyze button */
+    #analyze-btn {
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius-sm);
+      color: #fff;
+      cursor: pointer;
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 9px 22px;
+      transition: opacity var(--transition), transform var(--transition);
+      white-space: nowrap;
+      align-self: flex-end;
+    }
 
-  .level-tab:hover { color: var(--text); }
-  .level-tab.active { color: #fff; }
-  .level-tab[data-level="all"].active { background: var(--accent); border-color: var(--accent); }
-  .level-tab[data-level="1"].active  { background: var(--hsk1); border-color: var(--hsk1); color: #000; }
-  .level-tab[data-level="2"].active  { background: var(--hsk2); border-color: var(--hsk2); color: #000; }
-  .level-tab[data-level="3"].active  { background: var(--hsk3); border-color: var(--hsk3); color: #000; }
-  .level-tab[data-level="4"].active  { background: var(--hsk4); border-color: var(--hsk4); }
-  .level-tab[data-level="5"].active  { background: var(--hsk5); border-color: var(--hsk5); }
-  .level-tab[data-level="6"].active  { background: var(--hsk6); border-color: var(--hsk6); }
-  .level-tab[data-level="0"].active  { background: var(--hsk0); border-color: var(--hsk0); color: #000; }
+    #analyze-btn:hover { opacity: 0.88; }
+    #analyze-btn:active { transform: scale(0.97); }
+    #analyze-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-  /* HSK section headers */
-  .hsk-section { margin-bottom: 28px; }
+    /* ------------------------------------------------------------------ Progress */
+    #progress-section {
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: none;
+    }
 
-  .hsk-section-title {
-    font-size: 12px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: .08em;
-    margin-bottom: 12px;
-    padding-bottom: 6px;
-    border-bottom: 2px solid var(--border);
-  }
+    #progress-section.visible { display: block; }
 
-  /* Word grid */
-  .word-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 10px;
-  }
+    .stages {
+      display: flex;
+      gap: 0;
+      margin-bottom: 10px;
+    }
 
-  .word-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px;
-    cursor: pointer;
-    transition: border-color .15s, background .15s;
-    position: relative;
-  }
+    .stage-item {
+      flex: 1;
+      text-align: center;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 6px 4px;
+      border-bottom: 3px solid var(--border);
+      color: var(--text-muted);
+      transition: all var(--transition);
+    }
 
-  .word-card:hover { border-color: var(--accent); background: var(--surface2); }
-  .word-card.expanded { border-color: var(--accent); }
+    .stage-item.active {
+      border-color: var(--accent);
+      color: var(--accent2);
+    }
 
-  .word-char {
-    font-size: 28px;
-    font-weight: 700;
-    line-height: 1.2;
-    margin-bottom: 4px;
-  }
+    .stage-item.done {
+      border-color: var(--success);
+      color: var(--success);
+    }
 
-  .word-pinyin {
-    font-size: 13px;
-    color: var(--text-dim);
-    margin-bottom: 8px;
-  }
+    .stage-item.error {
+      border-color: var(--danger);
+      color: var(--danger);
+    }
 
-  .word-meta {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
+    #status-msg {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
 
-  .hsk-badge {
-    font-size: 11px;
-    font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 10px;
-    color: #000;
-  }
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
 
-  .freq-count { font-size: 11px; color: var(--text-dim); }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-  .contexts-panel {
-    display: none;
-    margin-top: 12px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
-  }
+    /* ------------------------------------------------------------------ Results */
+    #results-section {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+      display: none;
+    }
 
-  .word-card.expanded .contexts-panel { display: block; }
+    #results-section.visible { display: block; }
 
-  .context-sentence {
-    font-size: 13px;
-    color: var(--text-dim);
-    padding: 4px 0;
-    border-bottom: 1px solid var(--border);
-    line-height: 1.5;
-  }
+    /* Summary bar */
+    #summary-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
 
-  .context-sentence:last-child { border-bottom: none; }
+    #summary-text {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
 
-  /* ── Scrollbar ── */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    #export-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.85rem;
+      padding: 6px 14px;
+      transition: background var(--transition);
+      margin-left: auto;
+    }
 
-  /* ── Empty state ── */
-  #empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    flex: 1;
-    padding: 60px 28px;
-    text-align: center;
-    color: var(--text-dim);
-  }
+    #export-btn:hover { background: var(--surface); }
 
-  #empty-state .icon { font-size: 48px; margin-bottom: 16px; }
-  #empty-state p { font-size: 15px; max-width: 360px; }
-</style>
+    /* Filter tabs */
+    #filter-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    .tab-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-weight: 600;
+      padding: 5px 14px;
+      transition: all var(--transition);
+    }
+
+    .tab-btn:hover { border-color: var(--accent); color: var(--text); }
+    .tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+    /* Word sections */
+    .hsk-section { margin-bottom: 28px; }
+
+    .hsk-section-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .hsk-section-header h3 {
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .hsk-section-count {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      background: var(--surface2);
+      border-radius: 20px;
+      padding: 2px 10px;
+    }
+
+    /* Word grid */
+    .word-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 10px;
+    }
+
+    /* Word card */
+    .word-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      transition: border-color var(--transition), transform var(--transition);
+      cursor: pointer;
+    }
+
+    .word-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+
+    .word-card-top {
+      padding: 14px 14px 10px;
+    }
+
+    .word-char {
+      font-size: 2rem;
+      font-weight: 700;
+      line-height: 1.1;
+      display: block;
+    }
+
+    .word-pinyin {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-top: 3px;
+      display: block;
+    }
+
+    .word-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 14px 10px;
+    }
+
+    .hsk-badge {
+      font-size: 0.7rem;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 2px 7px;
+      letter-spacing: 0.04em;
+    }
+
+    .hsk-badge.lv1 { background: var(--hsk1); color: #000; }
+    .hsk-badge.lv2 { background: var(--hsk2); color: #000; }
+    .hsk-badge.lv3 { background: var(--hsk3); color: #000; }
+    .hsk-badge.lv4 { background: var(--hsk4); color: #fff; }
+    .hsk-badge.lv5 { background: var(--hsk5); color: #fff; }
+    .hsk-badge.lv6 { background: var(--hsk6); color: #fff; }
+    .hsk-badge.lv0 { background: var(--hsk0); color: #fff; }
+
+    .word-freq {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Context drawer */
+    .word-contexts {
+      border-top: 1px solid var(--border);
+      background: var(--surface2);
+      padding: 0 14px;
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 300ms ease, padding 200ms ease;
+    }
+
+    .word-contexts.open {
+      max-height: 400px;
+      padding: 10px 14px;
+    }
+
+    .context-sentence {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+      line-height: 1.5;
+    }
+
+    .context-sentence:last-child { border-bottom: none; }
+
+    /* ------------------------------------------------------------------ Empty state */
+    #empty-state {
+      text-align: center;
+      padding: 60px 24px;
+      color: var(--text-muted);
+    }
+
+    #empty-state .big-icon {
+      font-size: 3rem;
+      margin-bottom: 12px;
+    }
+
+    #empty-state h2 { color: var(--text); margin-bottom: 8px; }
+
+    /* ------------------------------------------------------------------ Responsive */
+    @media (max-width: 720px) {
+      .layout { grid-template-columns: 1fr; }
+      #sidebar { display: none; }
+    }
+
+    @media (max-width: 540px) {
+      .form-row { flex-direction: column; }
+      #analyze-btn { width: 100%; }
+    }
+  </style>
 </head>
 <body>
 
-<!-- Sidebar: episode history -->
-<aside id="sidebar">
-  <h2>History</h2>
-  <div id="episode-list"><p style="padding:12px 16px;font-size:13px;color:var(--text-dim)">No episodes yet.</p></div>
-</aside>
+<!-- Header -->
+<header>
+  <h1>PodcastCard</h1>
+  <span class="tagline">Chinese vocabulary from podcasts</span>
+</header>
 
-<!-- Main panel -->
-<div id="main">
-  <header>
-    <h1>Podcast<span>Card</span></h1>
-    <form id="analyze-form" onsubmit="return false;">
-      <input id="url-input" type="url" placeholder="Paste podcast or video URL…" required>
-      <select id="model-select">
-        <option value="tiny">Whisper: tiny</option>
-        <option value="base" selected>Whisper: base</option>
-        <option value="small">Whisper: small</option>
-        <option value="medium">Whisper: medium</option>
-        <option value="large-v2">Whisper: large-v2</option>
-      </select>
-      <div class="hsk-checks" id="hsk-checks">
-        <span style="font-size:13px;color:var(--text-dim);margin-right:2px">HSK:</span>
-        <label><input type="checkbox" value="1" checked> 1</label>
-        <label><input type="checkbox" value="2" checked> 2</label>
-        <label><input type="checkbox" value="3" checked> 3</label>
-        <label><input type="checkbox" value="4" checked> 4</label>
-        <label><input type="checkbox" value="5" checked> 5</label>
-        <label><input type="checkbox" value="6" checked> 6</label>
-        <label><input type="checkbox" value="0" checked> Unknown</label>
+<div class="layout">
+  <!-- Sidebar: episode history -->
+  <aside id="sidebar">
+    <h2>Episode History</h2>
+    <ul id="episode-list">
+      <li id="sidebar-empty">No episodes yet</li>
+    </ul>
+  </aside>
+
+  <!-- Main content -->
+  <div id="main">
+
+    <!-- Form -->
+    <section id="form-section">
+      <div class="form-row">
+        <div class="form-group url-group">
+          <label for="url-input">Podcast / Video URL</label>
+          <input
+            type="text"
+            id="url-input"
+            placeholder="https://www.youtube.com/watch?v=..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+
+        <div class="form-group">
+          <label for="model-select">Whisper Model</label>
+          <select id="model-select">
+            <option value="tiny">Tiny (fastest)</option>
+            <option value="base" selected>Base</option>
+            <option value="small">Small</option>
+            <option value="medium">Medium</option>
+            <option value="large-v2">Large v2 (best)</option>
+          </select>
+        </div>
+
+        <div class="form-group hsk-group">
+          <label>HSK Levels</label>
+          <div class="hsk-checkboxes">
+            <label class="hsk-check" data-level="1">
+              <input type="checkbox" name="hsk" value="1" checked />HSK 1
+            </label>
+            <label class="hsk-check" data-level="2">
+              <input type="checkbox" name="hsk" value="2" checked />HSK 2
+            </label>
+            <label class="hsk-check" data-level="3">
+              <input type="checkbox" name="hsk" value="3" checked />HSK 3
+            </label>
+            <label class="hsk-check" data-level="4">
+              <input type="checkbox" name="hsk" value="4" checked />HSK 4
+            </label>
+            <label class="hsk-check" data-level="5">
+              <input type="checkbox" name="hsk" value="5" checked />HSK 5
+            </label>
+            <label class="hsk-check" data-level="6">
+              <input type="checkbox" name="hsk" value="6" checked />HSK 6
+            </label>
+            <label class="hsk-check" data-level="0">
+              <input type="checkbox" name="hsk" value="0" checked />Unknown
+            </label>
+          </div>
+        </div>
+
+        <button id="analyze-btn">Analyze</button>
       </div>
-      <button class="btn-primary" id="analyze-btn" onclick="startAnalysis()">Analyze</button>
-    </form>
-  </header>
+    </section>
 
-  <!-- Progress -->
-  <div id="progress-area">
-    <div class="stages">
-      <div class="stage-pill" id="pill-downloading">Downloading</div>
-      <div class="stage-pill" id="pill-transcribing">Transcribing</div>
-      <div class="stage-pill" id="pill-extracting">Extracting</div>
-      <div class="stage-pill" id="pill-done">Done</div>
-    </div>
-    <div id="progress-msg">Starting…</div>
-  </div>
+    <!-- Progress -->
+    <section id="progress-section">
+      <div class="stages">
+        <div class="stage-item" id="stage-downloading">Downloading</div>
+        <div class="stage-item" id="stage-transcribing">Transcribing</div>
+        <div class="stage-item" id="stage-extracting">Extracting</div>
+        <div class="stage-item" id="stage-done">Done</div>
+      </div>
+      <div id="status-msg"><span class="spinner"></span>Starting…</div>
+    </section>
 
-  <!-- Results -->
-  <div id="results-area">
-    <div id="results-header">
-      <div id="results-summary"></div>
-      <a id="export-link" class="btn-secondary" href="#" download>Export CSV</a>
-    </div>
-    <div id="level-tabs"></div>
-    <div id="word-sections"></div>
-  </div>
+    <!-- Results -->
+    <section id="results-section">
+      <!-- Empty state (shown before first analysis) -->
+      <div id="empty-state">
+        <div class="big-icon">🎙️</div>
+        <h2>Ready to analyze</h2>
+        <p>Enter a podcast or YouTube URL above and click Analyze.</p>
+      </div>
 
-  <!-- Empty state -->
-  <div id="empty-state">
-    <div class="icon">🎙️</div>
-    <p>Paste a Mandarin podcast or video URL above to extract and study vocabulary by HSK level.</p>
-  </div>
-</div>
+      <!-- Populated after analysis -->
+      <div id="results-content" style="display:none">
+        <div id="summary-bar">
+          <span id="summary-text"></span>
+          <button id="export-btn">Export CSV</button>
+        </div>
+        <div id="filter-tabs"></div>
+        <div id="word-sections"></div>
+      </div>
+    </section>
+
+  </div><!-- #main -->
+</div><!-- .layout -->
 
 <script>
-const HSK_COLORS = { 1:'#4ade80',2:'#34d399',3:'#22d3ee',4:'#818cf8',5:'#c084fc',6:'#f472b6',0:'#94a3b8' };
-const HSK_TEXT   = { 1:'#000',2:'#000',3:'#000',4:'#fff',5:'#fff',6:'#fff',0:'#000' };
-const STAGES     = ['downloading','transcribing','extracting','done'];
+'use strict';
 
+// -----------------------------------------------------------------------
+// State
+// -----------------------------------------------------------------------
 let currentEpisodeId = null;
-let allWords = [];
+let currentWords = [];   // full unfiltered word list from last result
+let activeTab = 'all';
 
-// ── Init ────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------
+// Utility
+// -----------------------------------------------------------------------
+const $ = id => document.getElementById(id);
 
-async function init() {
-  await loadEpisodes();
+function hskLabel(level) {
+  return level === 0 ? 'Unknown' : `HSK ${level}`;
 }
 
-// ── Episode history ──────────────────────────────────────────────────────────
+function hskColor(level) {
+  const map = { 1:'hsk1', 2:'hsk2', 3:'hsk3', 4:'hsk4', 5:'hsk5', 6:'hsk6', 0:'hsk0' };
+  return map[level] ?? 'hsk0';
+}
 
+function formatDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+}
+
+function selectedHskLevels() {
+  return [...document.querySelectorAll('input[name="hsk"]:checked')]
+    .map(cb => cb.value)
+    .join(',');
+}
+
+// -----------------------------------------------------------------------
+// Episode sidebar
+// -----------------------------------------------------------------------
 async function loadEpisodes() {
-  const res = await fetch('/episodes');
-  if (!res.ok) return;
-  const episodes = await res.json();
-  const list = document.getElementById('episode-list');
-  if (!episodes.length) { list.innerHTML = '<p style="padding:12px 16px;font-size:13px;color:var(--text-dim)">No episodes yet.</p>'; return; }
-  list.innerHTML = episodes.map(ep => `
-    <div class="episode-item" data-id="${ep.id}" onclick="loadEpisode(${ep.id}, this)">
-      <div class="ep-title">${escHtml(ep.title)}</div>
-      <div class="ep-date">${new Date(ep.created_at).toLocaleDateString()}</div>
-    </div>
-  `).join('');
-}
+  try {
+    const res = await fetch('/episodes');
+    const episodes = await res.json();
+    const list = $('episode-list');
+    const empty = $('sidebar-empty');
 
-async function loadEpisode(id, el) {
-  document.querySelectorAll('.episode-item').forEach(e => e.classList.remove('active'));
-  if (el) el.classList.add('active');
-  const res = await fetch(`/episodes/${id}/words`);
-  if (!res.ok) return;
-  const words = await res.json();
-  currentEpisodeId = id;
-  renderResults(words, id);
-}
-
-// ── Analysis ─────────────────────────────────────────────────────────────────
-
-function getCheckedLevels() {
-  return [...document.querySelectorAll('#hsk-checks input:checked')].map(i => i.value).join(',') || 'all';
-}
-
-function setStage(stage) {
-  STAGES.forEach(s => {
-    const pill = document.getElementById(`pill-${s}`);
-    const idx_s = STAGES.indexOf(s), idx_cur = STAGES.indexOf(stage);
-    if (s === stage) pill.className = 'stage-pill active';
-    else if (idx_s < idx_cur) pill.className = 'stage-pill done';
-    else pill.className = 'stage-pill';
-  });
-}
-
-function startAnalysis() {
-  const url = document.getElementById('url-input').value.trim();
-  if (!url) return;
-  const model = document.getElementById('model-select').value;
-  const hsk_levels = getCheckedLevels();
-
-  document.getElementById('analyze-btn').disabled = true;
-  document.getElementById('progress-area').style.display = 'block';
-  document.getElementById('results-area').style.display = 'none';
-  document.getElementById('empty-state').style.display = 'none';
-  STAGES.forEach(s => document.getElementById(`pill-${s}`).className = 'stage-pill');
-  setStage('downloading');
-
-  const params = new URLSearchParams({ url, model, hsk_levels });
-  const es = new EventSource(`/analyze/stream?${params}`);
-
-  es.onmessage = (e) => {
-    const data = JSON.parse(e.data);
-    document.getElementById('progress-msg').textContent = data.message;
-
-    if (data.stage === 'error') {
-      STAGES.forEach(s => document.getElementById(`pill-${s}`).className = 'stage-pill error');
-      document.getElementById('progress-msg').style.color = 'var(--red)';
-      es.close();
-      document.getElementById('analyze-btn').disabled = false;
+    if (episodes.length === 0) {
+      empty.style.display = 'block';
       return;
     }
 
-    setStage(data.stage);
+    empty.style.display = 'none';
+    // Clear existing episode items (keep the empty placeholder)
+    [...list.querySelectorAll('.ep-item')].forEach(el => el.remove());
 
-    if (data.stage === 'done' && data.result) {
-      es.close();
-      currentEpisodeId = data.result.episode_id;
-      renderResults(data.result.words, data.result.episode_id);
-      loadEpisodes();
-      document.getElementById('analyze-btn').disabled = false;
+    episodes.forEach(ep => {
+      const li = document.createElement('li');
+      li.className = 'ep-item';
+      const btn = document.createElement('button');
+      btn.dataset.id = ep.id;
+      btn.innerHTML = `
+        <span class="ep-title">${escapeHtml(ep.title)}</span>
+        <span class="ep-date">${formatDate(ep.created_at)}</span>
+      `;
+      btn.addEventListener('click', () => loadEpisodeResults(ep.id, btn));
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+  } catch (err) {
+    console.error('Failed to load episodes:', err);
+  }
+}
+
+async function loadEpisodeResults(episodeId, btn) {
+  // Mark active
+  document.querySelectorAll('#episode-list button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+
+  currentEpisodeId = episodeId;
+  const hsk = selectedHskLevels() || 'all';
+  const url = `/episodes/${episodeId}/words?hsk_levels=${encodeURIComponent(hsk)}`;
+  const res = await fetch(url);
+  const words = await res.json();
+  currentWords = words;
+  renderResults(words, episodeId);
+}
+
+// -----------------------------------------------------------------------
+// Progress stages
+// -----------------------------------------------------------------------
+const STAGES = ['downloading', 'transcribing', 'extracting', 'done'];
+
+function resetStages() {
+  STAGES.forEach(s => {
+    const el = $(`stage-${s}`);
+    if (el) { el.className = 'stage-item'; }
+  });
+}
+
+function setStage(stageName) {
+  const idx = STAGES.indexOf(stageName);
+  STAGES.forEach((s, i) => {
+    const el = $(`stage-${s}`);
+    if (!el) return;
+    if (i < idx) el.className = 'stage-item done';
+    else if (i === idx) el.className = 'stage-item active';
+    else el.className = 'stage-item';
+  });
+}
+
+function setStatus(msg, hasSpinner = true) {
+  $('status-msg').innerHTML = (hasSpinner ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
+}
+
+// -----------------------------------------------------------------------
+// Analyze via SSE
+// -----------------------------------------------------------------------
+function doAnalyze() {
+  const url = $('url-input').value.trim();
+  if (!url) { $('url-input').focus(); return; }
+
+  const model = $('model-select').value;
+  const hsk = selectedHskLevels() || 'all';
+
+  // Show progress, hide results content
+  $('analyze-btn').disabled = true;
+  $('progress-section').classList.add('visible');
+  $('results-section').classList.add('visible');
+  $('empty-state').style.display = 'none';
+  $('results-content').style.display = 'none';
+  resetStages();
+  setStatus('Connecting…');
+
+  const params = new URLSearchParams({ url, model, hsk_levels: hsk });
+  const evtSrc = new EventSource(`/analyze/stream?${params}`);
+
+  evtSrc.onmessage = e => {
+    const data = JSON.parse(e.data);
+    const { stage, message, result } = data;
+
+    if (stage === 'error') {
+      setStatus(`Error: ${message}`, false);
+      STAGES.forEach(s => { const el = $(`stage-${s}`); if (el) el.classList.remove('active'); });
+      $('stage-done').className = 'stage-item error';
+      $('analyze-btn').disabled = false;
+      evtSrc.close();
+      return;
+    }
+
+    setStage(stage);
+    setStatus(message, stage !== 'done');
+
+    if (stage === 'done' && result) {
+      evtSrc.close();
+      currentEpisodeId = result.episode_id;
+      currentWords = result.words;
+      renderResults(result.words, result.episode_id);
+      $('analyze-btn').disabled = false;
+      loadEpisodes();  // refresh sidebar
     }
   };
 
-  es.onerror = () => {
-    document.getElementById('progress-msg').textContent = 'Connection error.';
-    es.close();
-    document.getElementById('analyze-btn').disabled = false;
+  evtSrc.onerror = () => {
+    setStatus('Connection error.', false);
+    $('analyze-btn').disabled = false;
+    evtSrc.close();
   };
 }
 
-// ── Rendering ────────────────────────────────────────────────────────────────
-
+// -----------------------------------------------------------------------
+// Render results
+// -----------------------------------------------------------------------
 function renderResults(words, episodeId) {
-  allWords = words;
-  document.getElementById('results-area').style.display = 'block';
-  document.getElementById('empty-state').style.display = 'none';
+  $('progress-section').classList.remove('visible');
+  $('results-content').style.display = 'block';
 
-  const levels = [...new Set(words.map(w => w.hsk_level))].sort((a,b) => a === 0 ? 1 : b === 0 ? -1 : a - b);
+  const levelSet = [...new Set(words.map(w => w.hsk_level))].sort((a, b) => {
+    if (a === 0) return 1;
+    if (b === 0) return -1;
+    return a - b;
+  });
 
   // Summary
-  document.getElementById('results-summary').textContent =
-    `${words.length} words · ${levels.length} HSK level${levels.length !== 1 ? 's' : ''}`;
+  const totalWords = words.length;
+  const levelCount = levelSet.length;
+  $('summary-text').textContent = `${totalWords} word${totalWords !== 1 ? 's' : ''} found across ${levelCount} HSK level${levelCount !== 1 ? 's' : ''}`;
 
-  // Export link
-  document.getElementById('export-link').href = `/episodes/${episodeId}/export.csv`;
+  // Export button
+  $('export-btn').onclick = () => {
+    const hsk = selectedHskLevels() || 'all';
+    window.location.href = `/episodes/${episodeId}/export.csv?hsk_levels=${encodeURIComponent(hsk)}`;
+  };
 
-  // Tabs
-  const tabs = document.getElementById('level-tabs');
-  tabs.innerHTML = `<div class="level-tab active" data-level="all" onclick="filterLevel('all', this)">All</div>` +
-    levels.map(l => `<div class="level-tab" data-level="${l}" style="--c:${HSK_COLORS[l]}" onclick="filterLevel(${l}, this)">${l === 0 ? 'Unknown' : 'HSK ' + l}</div>`).join('');
+  // Filter tabs
+  activeTab = 'all';
+  buildFilterTabs(words, levelSet);
 
-  renderWordSections(words, levels);
+  // Word sections
+  renderWordSections(words, levelSet, null);
 }
 
-function filterLevel(level, el) {
-  document.querySelectorAll('.level-tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  const filtered = level === 'all' ? allWords : allWords.filter(w => w.hsk_level === level);
-  const levels = level === 'all'
-    ? [...new Set(allWords.map(w => w.hsk_level))].sort((a,b) => a===0?1:b===0?-1:a-b)
-    : [level];
-  renderWordSections(filtered, levels);
+function buildFilterTabs(words, levelSet) {
+  const tabs = $('filter-tabs');
+  tabs.innerHTML = '';
+
+  const makeTab = (label, value) => {
+    const btn = document.createElement('button');
+    btn.className = 'tab-btn' + (value === 'all' ? ' active' : '');
+    btn.textContent = label;
+    btn.dataset.tab = value;
+    btn.addEventListener('click', () => {
+      activeTab = value;
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      const filtered = value === 'all' ? words : words.filter(w => w.hsk_level === parseInt(value, 10));
+      const sections = value === 'all' ? levelSet : [parseInt(value, 10)];
+      renderWordSections(filtered, sections, value === 'all' ? null : parseInt(value, 10));
+    });
+    return btn;
+  };
+
+  tabs.appendChild(makeTab(`All (${words.length})`, 'all'));
+  levelSet.forEach(lv => {
+    const count = words.filter(w => w.hsk_level === lv).length;
+    tabs.appendChild(makeTab(`${hskLabel(lv)} (${count})`, String(lv)));
+  });
 }
 
-function renderWordSections(words, levels) {
-  const container = document.getElementById('word-sections');
-  container.innerHTML = levels.map(level => {
-    const group = words.filter(w => w.hsk_level === level);
-    if (!group.length) return '';
-    const label = level === 0 ? 'Unknown / Non-HSK' : `HSK Level ${level}`;
-    const color = HSK_COLORS[level] || '#94a3b8';
-    return `
-      <div class="hsk-section">
-        <div class="hsk-section-title" style="color:${color};border-color:${color}33">${label} <span style="font-weight:400;color:var(--text-dim)">(${group.length})</span></div>
-        <div class="word-grid">${group.map(wordCard).join('')}</div>
-      </div>`;
-  }).join('');
-}
+function renderWordSections(words, levelSet, singleLevel) {
+  const container = $('word-sections');
+  container.innerHTML = '';
 
-function wordCard(w) {
-  const color = HSK_COLORS[w.hsk_level] || '#94a3b8';
-  const textColor = HSK_TEXT[w.hsk_level] || '#000';
-  const badge = w.hsk_level === 0 ? '—' : `HSK ${w.hsk_level}`;
-  const contexts = w.contexts.map(c => `<div class="context-sentence">${escHtml(c)}</div>`).join('');
-  const freq = w.frequency === 1 ? '1 occurrence' : `${w.frequency} occurrences`;
-  return `
-    <div class="word-card" onclick="this.classList.toggle('expanded')">
-      <div class="word-char">${escHtml(w.word)}</div>
-      <div class="word-pinyin">${escHtml(w.pinyin)}</div>
-      <div class="word-meta">
-        <span class="hsk-badge" style="background:${color};color:${textColor}">${badge}</span>
-        <span class="freq-count">${freq}</span>
+  const sections = singleLevel !== null ? [singleLevel] : levelSet;
+
+  sections.forEach(lv => {
+    const group = words.filter(w => w.hsk_level === lv);
+    if (!group.length) return;
+
+    const sec = document.createElement('div');
+    sec.className = 'hsk-section';
+
+    const colorVar = `var(--${hskColor(lv)})`;
+    sec.innerHTML = `
+      <div class="hsk-section-header">
+        <h3 style="color:${colorVar}">${hskLabel(lv)}</h3>
+        <span class="hsk-section-count">${group.length} word${group.length !== 1 ? 's' : ''}</span>
       </div>
-      ${contexts ? `<div class="contexts-panel">${contexts}</div>` : ''}
-    </div>`;
+      <div class="word-grid"></div>
+    `;
+
+    const grid = sec.querySelector('.word-grid');
+    group.forEach(w => grid.appendChild(makeWordCard(w)));
+
+    container.appendChild(sec);
+  });
 }
 
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function makeWordCard(w) {
+  const card = document.createElement('div');
+  card.className = 'word-card';
+
+  const lv = w.hsk_level;
+  const badgeClass = `hsk-badge lv${lv}`;
+
+  card.innerHTML = `
+    <div class="word-card-top">
+      <span class="word-char">${escapeHtml(w.word)}</span>
+      <span class="word-pinyin">${escapeHtml(w.pinyin)}</span>
+    </div>
+    <div class="word-meta">
+      <span class="${badgeClass}">${hskLabel(lv)}</span>
+      <span class="word-freq">×${w.frequency}</span>
+    </div>
+    <div class="word-contexts">
+      ${w.contexts.map(c => `<div class="context-sentence">${escapeHtml(c)}</div>`).join('')}
+    </div>
+  `;
+
+  // Toggle context on click
+  card.addEventListener('click', () => {
+    const ctx = card.querySelector('.word-contexts');
+    ctx.classList.toggle('open');
+  });
+
+  return card;
 }
 
-init();
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// -----------------------------------------------------------------------
+// Event wiring
+// -----------------------------------------------------------------------
+$('analyze-btn').addEventListener('click', doAnalyze);
+
+$('url-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doAnalyze();
+});
+
+// Initial load
+loadEpisodes();
 </script>
 </body>
 </html>
