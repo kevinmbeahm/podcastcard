@@ -1,0 +1,7 @@
+faster-whisper
+yt-dlp
+jieba
+pypinyin
+typer[all]
+rich
+pydantic
