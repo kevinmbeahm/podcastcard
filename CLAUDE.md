@@ -13,7 +13,7 @@ vocabulary alongside the sentence it was used in.
 There are two ways to use it:
 - **CLI** (`python -m src run <url>`) — prints results to the terminal; writes the transcript
   (`transcript.txt`/`.vtt`), `words.csv`, and optionally an Anki deck (`--anki`).
-- **Web UI** (`uvicorn src.app:app`) — single-page app with live progress, a **Transcript** tab
+- **Web UI** (`python -m src serve`, i.e. uvicorn on `src.app:app`) — single-page app with live progress, a **Transcript** tab
   (full transcript; click any word for its definition and every sentence it appears in), a
   **Vocabulary** tab (words at the selected HSK levels with definitions and sentences, CSV and
   Anki export), and episode history.
@@ -119,7 +119,7 @@ pip install -r requirements.txt        # also needs FFmpeg installed system-wide
 python -m src run "<url>" --model base --hsk-levels 4,5,6 --output ./output [--anki] [--device cpu]
 
 # Web
-uvicorn src.app:app --reload           # http://localhost:8000
+python -m src serve                    # http://localhost:8000 (add --reload when developing)
 ```
 
 ## Conventions

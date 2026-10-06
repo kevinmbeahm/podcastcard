@@ -67,3 +67,14 @@ def test_anki_deck_is_opt_in(monkeypatch, tmp_path):
     _stub_pipeline(monkeypatch)
     runner.invoke(app, ["run", "http://x", "--output", str(tmp_path)])
     assert not (tmp_path / "anki_deck.apkg").exists()
+
+
+def test_serve_starts_uvicorn_with_the_app(monkeypatch):
+    calls = []
+    fake = types.ModuleType("uvicorn")
+    fake.run = lambda target, **kwargs: calls.append((target, kwargs))
+    monkeypatch.setitem(sys.modules, "uvicorn", fake)
+    result = runner.invoke(app, ["serve", "--port", "9001"])
+    assert result.exit_code == 0, result.output
+    assert calls == [("src.app:app", {"host": "127.0.0.1", "port": 9001, "reload": False})]
+    assert "http://localhost:9001" in result.output

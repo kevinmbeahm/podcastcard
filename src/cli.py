@@ -167,6 +167,23 @@ def run(
         console.print(f"[green]✓[/green] Anki deck with {count} cards: [bold]{apkg_path}[/bold]")
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", help="Interface to listen on."),
+    port: int = typer.Option(8000, "--port", help="Port to listen on."),
+    reload: bool = typer.Option(False, "--reload", help="Restart on code changes (development)."),
+) -> None:
+    """Start the web app (then open http://localhost:8000)."""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[bold red]The web server needs uvicorn: pip install -r requirements.txt[/bold red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"PodcastCard is running at [bold]http://{'localhost' if host == '127.0.0.1' else host}:{port}[/bold]  (Ctrl+C to stop)")
+    uvicorn.run("src.app:app", host=host, port=port, reload=reload)
+
+
 def _display_words(words: list) -> None:
     """Render words grouped by HSK level using rich."""
     from collections import defaultdict

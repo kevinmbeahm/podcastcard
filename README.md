@@ -41,7 +41,7 @@ pip install -r requirements.txt
 ### Web app (recommended)
 
 ```bash
-uvicorn src.app:app --reload     # then open http://localhost:8000
+python -m src serve              # then open http://localhost:8000
 ```
 
 Paste a podcast or video URL (anything `yt-dlp` supports) and click **Analyze**. When it finishes you get:
