@@ -3,8 +3,27 @@
 from __future__ import annotations
 
 import os
+import shutil
 
 import yt_dlp
+
+
+class FFmpegNotFoundError(RuntimeError):
+    """FFmpeg/ffprobe are required to convert downloaded audio to mp3."""
+
+
+_FFMPEG_HELP = (
+    "FFmpeg is required but ffmpeg/ffprobe were not found on your PATH. Install it:\n"
+    "  macOS:   brew install ffmpeg\n"
+    "  Ubuntu:  sudo apt install ffmpeg\n"
+    "  Windows: winget install Gyan.FFmpeg   (then reopen your terminal)"
+)
+
+
+def check_ffmpeg() -> None:
+    """Raise FFmpegNotFoundError with install hints if FFmpeg is unavailable."""
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        raise FFmpegNotFoundError(_FFMPEG_HELP)
 
 
 def download_audio(url: str, output_dir: str) -> str:
@@ -15,6 +34,7 @@ def download_audio(url: str, output_dir: str) -> str:
     Uses yt-dlp's Python API to fetch the best available audio stream and
     post-process it to mp3 via ffmpeg.
     """
+    check_ffmpeg()
     os.makedirs(output_dir, exist_ok=True)
 
     output_template = os.path.join(output_dir, "%(title)s.%(ext)s")

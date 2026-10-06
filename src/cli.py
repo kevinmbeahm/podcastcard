@@ -68,7 +68,7 @@ def run(
     Full pipeline: download audio → transcribe → extract vocabulary → display & export.
     """
     # Import here so startup is fast and errors surface only when needed
-    from .audio import download_audio
+    from .audio import FFmpegNotFoundError, download_audio
     from .transcribe import transcribe
     from .extract import extract_words, WordOccurrence
 
@@ -85,7 +85,12 @@ def run(
         console=console,
     ) as progress:
         progress.add_task("Downloading audio…", total=None)
-        audio_path = download_audio(url, output_dir)
+        try:
+            audio_path = download_audio(url, output_dir)
+        except FFmpegNotFoundError as exc:
+            progress.stop()
+            console.print(f"[bold red]{exc}[/bold red]")
+            raise typer.Exit(code=1)
 
     console.print(f"[green]✓[/green] Audio saved to [bold]{audio_path}[/bold]")
 
