@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from typing import Callable
 
 import yt_dlp
 
@@ -26,13 +27,20 @@ def check_ffmpeg() -> None:
         raise FFmpegNotFoundError(_FFMPEG_HELP)
 
 
-def download_audio(url: str, output_dir: str) -> str:
+def download_audio(
+    url: str,
+    output_dir: str,
+    on_progress: Callable[[float], None] | None = None,
+) -> str:
     """
     Download audio from *url* to *output_dir* and return the path to the
     resulting mp3 file.
 
     Uses yt-dlp's Python API to fetch the best available audio stream and
     post-process it to mp3 via ffmpeg.
+
+    *on_progress*, if given, is called with the download fraction (0.0-1.0).
+    It reaches 1.0 when the download ends, before the mp3 conversion starts.
     """
     check_ffmpeg()
     os.makedirs(output_dir, exist_ok=True)
@@ -46,7 +54,13 @@ def download_audio(url: str, output_dir: str) -> str:
             self.filepath: str | None = None
 
         def __call__(self, d: dict) -> None:
-            if d["status"] == "finished":
+            if d["status"] == "downloading" and on_progress:
+                total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                if total:
+                    on_progress(min(d.get("downloaded_bytes", 0) / total, 1.0))
+            elif d["status"] == "finished":
+                if on_progress:
+                    on_progress(1.0)
                 # after post-processing the file extension changes to mp3
                 self.filepath = os.path.splitext(d["filename"])[0] + ".mp3"
 
@@ -65,6 +79,9 @@ def download_audio(url: str, output_dir: str) -> str:
         "progress_hooks": [hook],
         "quiet": True,
         "no_warnings": True,
+        # Fail (and retry) instead of waiting forever on a stalled connection.
+        "socket_timeout": 30,
+        "retries": 5,
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

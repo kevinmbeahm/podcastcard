@@ -92,6 +92,7 @@ Planned but not yet implemented: `phrases.csv`, `--min-frequency`, batch mode, a
 
 ## Notes & Tips
 
+- The first run of each Whisper model size downloads the model (`tiny` ≈75 MB, `base` ≈145 MB, `small` ≈480 MB, `medium` ≈1.5 GB, `large-v2` ≈3 GB). It uses almost no CPU while downloading, so that wait is normal; the page and terminal show elapsed time so you can tell it is still working.
 - Clean audio (good mic, low background noise) greatly improves transcription. `small` is noticeably more accurate than `base`; use `--device cpu` if you don't have a working CUDA setup.
 - Most jargon and names show up as *Non-HSK*. Switch that chip on in the web app when you want to see them.
 

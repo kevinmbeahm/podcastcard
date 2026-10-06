@@ -313,6 +313,27 @@
       color: var(--danger);
     }
 
+    /* Progress bar (animated while the total is unknown) */
+    .bar {
+      height: 6px;
+      background: var(--surface);
+      border-radius: 3px;
+      overflow: hidden;
+      margin: 4px 0 10px;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width 300ms ease;
+    }
+
+    .bar.indeterminate .bar-fill { width: 35%; animation: slide 1.3s ease-in-out infinite; }
+
+    @keyframes slide { from { margin-left: -35%; } to { margin-left: 100%; } }
+
     #status-msg {
       font-size: 0.875rem;
       color: var(--text-muted);
@@ -781,6 +802,7 @@
         <div class="stage-item" id="stage-extracting">Extracting</div>
         <div class="stage-item" id="stage-done">Done</div>
       </div>
+      <div class="bar indeterminate" id="bar"><div class="bar-fill" id="bar-fill"></div></div>
       <div id="status-msg"><span class="spinner"></span>Starting…</div>
     </section>
 
@@ -1203,6 +1225,13 @@ function setStage(stageName) {
   });
 }
 
+/** fraction in 0..1, or null/undefined when the total is unknown. */
+function setProgress(fraction) {
+  const unknown = fraction === null || fraction === undefined;
+  $('bar').classList.toggle('indeterminate', unknown);
+  $('bar-fill').style.width = unknown ? '' : `${Math.round(fraction * 100)}%`;
+}
+
 function setStatus(msg, hasSpinner = true) {
   $('status-msg').innerHTML = (hasSpinner ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
 }
@@ -1214,6 +1243,7 @@ function doAnalyze() {
   $('analyze-btn').disabled = true;
   $('progress-section').classList.add('visible');
   resetStages();
+  setProgress(null);
   setStatus('Connecting…');
 
   const params = new URLSearchParams({ url, model: $('model-select').value });
@@ -1221,7 +1251,7 @@ function doAnalyze() {
   const finish = () => { $('analyze-btn').disabled = false; evtSrc.close(); };
 
   evtSrc.onmessage = async e => {
-    const { stage, message, result } = JSON.parse(e.data);
+    const { stage, message, result, progress, elapsed } = JSON.parse(e.data);
 
     if (stage === 'error') {
       setStatus(`Error: ${message}`, false);
@@ -1232,7 +1262,9 @@ function doAnalyze() {
     }
 
     setStage(stage);
-    setStatus(message, stage !== 'done');
+    setProgress(stage === 'done' ? 1 : progress);
+    const took = elapsed ? ` · ${formatTime(elapsed)} elapsed` : '';
+    setStatus(message + (stage === 'done' ? '' : took), stage !== 'done');
 
     if (stage === 'done' && result) {
       finish();

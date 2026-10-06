@@ -48,8 +48,8 @@ URL → audio.download_audio() → transcribe.transcribe() ─┬→ extract.ext
 
 | File | Responsibility |
 |------|----------------|
-| `src/audio.py` | `download_audio(url, output_dir) -> str` (path to mp3) via yt-dlp |
-| `src/transcribe.py` | `transcribe(audio_path, model_size="base", device="auto") -> list[Segment]` via faster-whisper; `auto` falls back to CPU (int8) if CUDA libs are missing |
+| `src/audio.py` | `download_audio(url, output_dir, on_progress=None) -> str` (path to mp3) via yt-dlp; `on_progress(fraction)`; checks FFmpeg first; 30 s socket timeout |
+| `src/transcribe.py` | `transcribe(audio_path, model_size="base", device="auto", on_progress=None) -> list[Segment]` via faster-whisper; `on_progress(seconds_done, total_seconds)`; `auto` falls back to CPU (int8) if CUDA libs are missing; `model_is_cached()` / `loading_message()` say whether the first use will download the model |
 | `src/extract.py` | `extract_words(segments) -> list[WordOccurrence]`; jieba tokenize + dedup + filter; defines `Segment` and `WordOccurrence` dataclasses |
 | `src/dictionary.py` | `get_definition(word) -> str` — English gloss from CC-CEDICT (lazy-loaded; skips variant/abbr/surname stubs; prefers the reading matching pypinyin) |
 | `src/hsk.py` | `get_hsk_level(word) -> int` (0 = unknown), `get_pinyin(word) -> str`, `HSK_WORDS` dict |
@@ -90,7 +90,12 @@ HSK level ascending, with unknown (level 0) words last.
 - `POST /analyze` — body `{url, model, hsk_levels}`; runs the pipeline, returns `{episode_id, words}`
   (`hsk_levels` only filters the returned words; **everything is stored**)
 - `GET /analyze/stream?url=&model=` — SSE; stages `downloading` → `transcribing` →
-  `extracting` → `done` (`result: {episode_id, title}`), or `error`
+  `extracting` → `done` (`result: {episode_id, title}`), or `error`. Events are
+  `{stage, message, progress (0–1 or null), elapsed (s)}`. Slow steps run in a worker thread
+  (`_run_with_progress`) that sends an event immediately, on every progress report, and a
+  heartbeat every `HEARTBEAT_SECONDS` (2 s) — so a silent step (e.g. a first-use Whisper model
+  download) still shows elapsed time instead of looking hung. Progress and errors are also
+  logged to the server terminal (`uvicorn.error` logger).
 - `GET /episodes` — list past episodes
 - `GET /episodes/{id}/words?hsk_levels=4,5,6` — stored words (with definitions/contexts), optional level filter
 - `GET /episodes/{id}/transcript` — `{episode, segments:[{start,end,text,tokens}], lexicon:{token:{pinyin,hsk_level,definition[,parts]}}}`
@@ -157,4 +162,6 @@ python -m src serve                    # http://localhost:8000 (add --reload whe
   compounds made of known characters/words as known would fix it.
 - Whisper may emit Traditional characters for some audio; the HSK/CEDICT lookups are keyed on
   Simplified, so those words show as unknown.
+- The first run of each Whisper model size downloads it (tiny ≈75 MB … large-v2 ≈3 GB) with no
+  byte-level progress, only the message plus elapsed time.
 - Transcription quality depends heavily on audio clarity and Whisper model size.

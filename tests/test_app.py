@@ -23,8 +23,13 @@ SEGMENTS = [
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "DB_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setattr(app_module, "download_audio", lambda url, out: f"{out}/x.mp3")
-    monkeypatch.setattr(app_module, "transcribe", lambda path, model_size="base": SEGMENTS)
+    monkeypatch.setattr(
+        app_module, "download_audio", lambda url, out, on_progress=None: f"{out}/x.mp3"
+    )
+    monkeypatch.setattr(
+        app_module, "transcribe", lambda path, model_size="base", on_progress=None: SEGMENTS
+    )
+    monkeypatch.setattr(app_module, "loading_message", lambda model: f"Loading {model}")
     monkeypatch.setattr(app_module, "_fetch_video_title", lambda url: "测试 Episode: one")
     return TestClient(app_module.app)
 
@@ -73,13 +78,19 @@ def test_reanalyzing_the_same_url_replaces_instead_of_duplicating(client):
 def test_stream_emits_stages_then_done(client):
     r = client.get("/analyze/stream", params={"url": URL})
     events = [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: ")]
-    assert [e["stage"] for e in events] == ["downloading", "transcribing", "extracting", "done"]
+    stages = [e["stage"] for e in events]
+    assert [s for i, s in enumerate(stages) if i == 0 or s != stages[i - 1]] == [
+        "downloading",
+        "transcribing",
+        "extracting",
+        "done",
+    ]
     eid = events[-1]["result"]["episode_id"]
     assert client.get(f"/episodes/{eid}/transcript").json()["segments"]
 
 
 def test_stream_reports_download_errors(client, monkeypatch):
-    def boom(url, out):
+    def boom(url, out, on_progress=None):
         raise RuntimeError("no network")
 
     monkeypatch.setattr(app_module, "download_audio", boom)
@@ -153,3 +164,59 @@ def test_old_database_without_transcripts_still_works(client, tmp_path):
     data = client.get("/episodes/1/transcript").json()
     assert data["segments"] == [] and data["lexicon"] == {}
     assert client.get("/episodes/1/words").json()[0]["word"] == "你好"
+
+
+def _events(client, **params):
+    r = client.get("/analyze/stream", params={"url": URL, **params})
+    return [json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: ")]
+
+
+def test_stream_reports_download_and_transcription_progress(client, monkeypatch):
+    def download(url, out, on_progress=None):
+        on_progress(0.5)
+        on_progress(1.0)
+        return f"{out}/x.mp3"
+
+    def transcribe(path, model_size="base", on_progress=None):
+        on_progress(15.0, 30.0)
+        on_progress(30.0, 30.0)
+        return SEGMENTS
+
+    monkeypatch.setattr(app_module, "download_audio", download)
+    monkeypatch.setattr(app_module, "transcribe", transcribe)
+    events = _events(client)
+
+    downloading = [e for e in events if e["stage"] == "downloading" and e.get("progress") is not None]
+    assert [(e["progress"], e["message"]) for e in downloading] == [
+        (0.5, "Downloading audio… 50%"),
+        (1.0, "Converting audio to mp3…"),
+    ]
+    transcribing = [e for e in events if e["stage"] == "transcribing" and e.get("progress") is not None]
+    assert transcribing[0]["message"] == "Transcribing… 50% (0:15 of 0:30)"
+    assert transcribing[-1]["progress"] == 1.0
+    assert all("elapsed" in e for e in events if e["stage"] in ("downloading", "transcribing"))
+
+
+def test_slow_steps_send_heartbeats_so_the_page_can_show_elapsed_time(client, monkeypatch):
+    import time
+
+    def slow_transcribe(path, model_size="base", on_progress=None):
+        time.sleep(0.4)  # e.g. a model download that reports nothing
+        return SEGMENTS
+
+    monkeypatch.setattr(app_module, "HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(app_module, "transcribe", slow_transcribe)
+    events = _events(client)
+
+    waiting = [e for e in events if e["stage"] == "transcribing"]
+    assert len(waiting) >= 3
+    assert {e["message"] for e in waiting} == {"Loading base"}
+    assert events[-1]["stage"] == "done"
+
+
+def test_progress_reports_are_throttled():
+    sent = []
+    report = app_module._throttled(lambda fraction, text: sent.append(fraction), step=0.1)
+    for f in (0.0, 0.02, 0.05, 0.11, 0.15, 0.25, 0.99, 1.0):
+        report(f, "x")
+    assert sent == [0.0, 0.11, 0.25, 0.99, 1.0]

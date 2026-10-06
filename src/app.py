@@ -5,13 +5,17 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import os
+import queue
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Generator, Iterator, Optional, TypeVar
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query
@@ -25,8 +29,16 @@ sys.path.insert(0, str(ROOT))
 from src.anki import write_apkg
 from src.audio import download_audio
 from src.extract import Segment, extract_words
-from src.transcribe import transcribe
+from src.transcribe import loading_message, transcribe
 from src.transcript import annotate, format_text, format_vtt
+
+# uvicorn's logger, so progress and errors show up in the terminal running the server
+log = logging.getLogger("uvicorn.error")
+
+# How often a long-running stage re-sends its status, so the page can show it is alive.
+HEARTBEAT_SECONDS = 2.0
+
+T = TypeVar("T")
 
 # ---------------------------------------------------------------------------
 # Database
@@ -228,30 +240,137 @@ def _save_episode(
         con.close()
 
 
+def _fmt_clock(seconds: float) -> str:
+    m, sec = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+def _run_with_progress(
+    work: Callable[[Callable[[Optional[float], Optional[str]], None]], T],
+    stage: str,
+    message: str,
+    started: float,
+) -> Generator[dict, None, T]:
+    """Run blocking ``work(report)`` in a thread, yielding progress events.
+
+    ``report(fraction, message)`` may be called from the worker at any time. An event is
+    yielded for each report and, if nothing is reported, every ``HEARTBEAT_SECONDS`` --
+    so slow, silent steps (a model download, FFmpeg) still show elapsed time. Returns
+    work's result, or re-raises its exception.
+    """
+    updates: queue.Queue = queue.Queue()
+
+    def report(fraction: Optional[float] = None, text: Optional[str] = None) -> None:
+        updates.put(("progress", fraction, text))
+
+    def target() -> None:
+        try:
+            updates.put(("done", work(report), None))
+        except BaseException as exc:  # handed back to the caller's thread
+            updates.put(("error", exc, None))
+
+    def event(fraction: Optional[float]) -> dict:
+        return {
+            "stage": stage,
+            "message": message,
+            "progress": fraction,
+            "elapsed": round(time.monotonic() - started),
+        }
+
+    threading.Thread(target=target, daemon=True).start()
+
+    fraction: Optional[float] = None
+    yield event(None)  # announce the stage straight away, don't wait for the first heartbeat
+    while True:
+        try:
+            kind, value, text = updates.get(timeout=HEARTBEAT_SECONDS)
+        except queue.Empty:
+            kind = "heartbeat"
+        if kind == "done":
+            return value
+        if kind == "error":
+            raise value
+        if kind == "progress":
+            fraction = value if value is not None else fraction
+            message = text or message
+        yield event(fraction)
+
+
+def _throttled(report: Callable[..., None], step: float = 0.01) -> Callable[[float, str], None]:
+    """Only forward a progress report when it has moved by at least *step*."""
+    last = [-1.0]
+
+    def inner(fraction: float, text: str) -> None:
+        if fraction >= 1.0 or fraction - last[0] >= step:
+            last[0] = fraction
+            report(fraction, text)
+
+    return inner
+
+
 def _pipeline(url: str, model: str) -> Iterator[dict]:
     """Download → transcribe → extract → save, yielding progress events.
 
-    Events are ``{"stage", "message"}``; the last is either ``stage == "done"``
-    (with ``result``) or ``stage == "error"``.
+    Events are ``{"stage", "message", "progress"?, "elapsed"?}``; the last is either
+    ``stage == "done"`` (with ``result``) or ``stage == "error"``.
     """
-    yield {"stage": "downloading", "message": "Fetching audio…"}
-    title = _fetch_video_title(url)
+    started = time.monotonic()
+    log.info("Analyzing %s (model=%s)", url, model)
+    yield {"stage": "downloading", "message": "Fetching audio…", "elapsed": 0}
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            audio_path = download_audio(url, tmp)
+
+            def download(report):
+                progress = _throttled(report)
+                # Also a network call, so it runs here where the heartbeat covers it.
+                title = _fetch_video_title(url)
+
+                def on_download(fraction: float) -> None:
+                    text = (
+                        "Converting audio to mp3…"
+                        if fraction >= 1.0
+                        else f"Downloading audio… {fraction:.0%}"
+                    )
+                    progress(fraction, text)
+
+                return title, download_audio(url, tmp, on_progress=on_download)
+
+            title, audio_path = yield from _run_with_progress(
+                download, "downloading", "Looking up the video…", started
+            )
         except Exception as exc:
+            log.exception("Download failed for %s", url)
             yield {"stage": "error", "message": f"Download failed: {exc}"}
             return
 
-        yield {"stage": "transcribing", "message": "Transcribing audio with Whisper…"}
+        loading = loading_message(model)
+        log.info(loading)
+
         try:
-            segments = transcribe(audio_path, model_size=model)
+
+            def run_whisper(report):
+                progress = _throttled(report)
+
+                def on_transcribe(done: float, total: float) -> None:
+                    progress(
+                        done / total,
+                        f"Transcribing… {done / total:.0%} "
+                        f"({_fmt_clock(done)} of {_fmt_clock(total)})",
+                    )
+
+                return transcribe(audio_path, model_size=model, on_progress=on_transcribe)
+
+            segments = yield from _run_with_progress(
+                run_whisper, "transcribing", loading, started
+            )
         except Exception as exc:
+            log.exception("Transcription failed for %s", url)
             yield {"stage": "error", "message": f"Transcription failed: {exc}"}
             return
 
-    yield {"stage": "extracting", "message": "Extracting Chinese vocabulary…"}
+    yield {"stage": "extracting", "message": "Extracting Chinese vocabulary…", "elapsed": round(time.monotonic() - started)}
     try:
         # Every word is stored: the HSK filter is applied when viewing/exporting.
         words = [
@@ -268,9 +387,11 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
         annotated, lexicon = annotate(segments)
         episode_id = _save_episode(url, title, words, annotated, lexicon)
     except Exception as exc:
+        log.exception("Extraction failed for %s", url)
         yield {"stage": "error", "message": f"Extraction failed: {exc}"}
         return
 
+    log.info("Finished %s in %ss: %d words, %d segments", url, round(time.monotonic() - started), len(words), len(segments))
     yield {
         "stage": "done",
         "message": f"Found {len(words)} words in {len(segments)} transcript segments.",

@@ -21,7 +21,7 @@ def _fake_model_factory(calls, fail_on):
                     raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
                 yield types.SimpleNamespace(start=0.0, end=1.0, text=" 你好 ")
 
-            return gen(), None
+            return gen(), types.SimpleNamespace(duration=10.0)
 
     return FakeModel
 
@@ -55,3 +55,28 @@ def test_unrelated_runtime_errors_are_not_swallowed(monkeypatch):
 def test_rejects_unknown_device():
     with pytest.raises(ValueError):
         tr.transcribe("a.mp3", device="tpu")
+
+
+def test_progress_is_reported_after_each_segment(monkeypatch):
+    monkeypatch.setattr(tr, "WhisperModel", _fake_model_factory([], set()))
+    seen = []
+    tr.transcribe("a.mp3", device="cpu", on_progress=lambda done, total: seen.append((done, total)))
+    assert seen == [(1.0, 10.0)]
+
+
+def test_model_cache_check_and_loading_messages(monkeypatch):
+    def cached(size, local_files_only=False):
+        return "/cache/model"
+
+    def missing(size, local_files_only=False):
+        raise OSError("not in cache")
+
+    monkeypatch.setattr(tr, "download_model", cached)
+    assert tr.model_is_cached("base") is True
+    assert tr.loading_message("base") == "Loading Whisper model 'base'…"
+
+    monkeypatch.setattr(tr, "download_model", missing)
+    assert tr.model_is_cached("small") is False
+    message = tr.loading_message("small")
+    assert "Downloading Whisper model 'small'" in message and "480 MB" in message
+    assert "first use only" in tr.loading_message("some-custom-model")

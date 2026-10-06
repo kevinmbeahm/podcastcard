@@ -10,7 +10,14 @@ from typing import Optional
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 from rich import print as rprint
 
@@ -20,6 +27,19 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+def _progress() -> Progress:
+    """A spinner + bar + percentage + elapsed time (the bar pulses until a total is known)."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        transient=True,
+        console=console,
+    )
 
 
 @app.callback()
@@ -80,7 +100,7 @@ def run(
     """
     # Import here so startup is fast and errors surface only when needed
     from .audio import FFmpegNotFoundError, download_audio
-    from .transcribe import transcribe
+    from .transcribe import loading_message, transcribe
     from .extract import extract_words, WordOccurrence
 
     if device not in ("auto", "cpu", "cuda"):
@@ -91,15 +111,19 @@ def run(
 
     # ── Step 1: Download ────────────────────────────────────────────────────
     audio_path: str
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold cyan]{task.description}"),
-        transient=True,
-        console=console,
-    ) as progress:
-        progress.add_task("Downloading audio…", total=None)
+    with _progress() as progress:
+        task = progress.add_task("Downloading audio…", total=None)
+
+        def on_download(fraction: float) -> None:
+            progress.update(
+                task,
+                total=100,
+                completed=fraction * 100,
+                description="Converting audio to mp3…" if fraction >= 1 else "Downloading audio…",
+            )
+
         try:
-            audio_path = download_audio(url, output_dir)
+            audio_path = download_audio(url, output_dir, on_progress=on_download)
         except FFmpegNotFoundError as exc:
             progress.stop()
             console.print(f"[bold red]{exc}[/bold red]")
@@ -111,14 +135,18 @@ def run(
     from .extract import Segment  # noqa: F401 (already imported via extract_words)
 
     segments: list
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold cyan]{task.description}"),
-        transient=True,
-        console=console,
-    ) as progress:
-        progress.add_task(f"Transcribing with Whisper [{model}]…", total=None)
-        segments = transcribe(audio_path, model_size=model, device=device)
+    with _progress() as progress:
+        task = progress.add_task(loading_message(model), total=None)
+
+        def on_transcribe(done: float, total: float) -> None:
+            progress.update(
+                task,
+                total=total,
+                completed=done,
+                description=f"Transcribing with Whisper [{model}]…",
+            )
+
+        segments = transcribe(audio_path, model_size=model, device=device, on_progress=on_transcribe)
 
     console.print(f"[green]✓[/green] Transcribed {len(segments)} segments.")
 
