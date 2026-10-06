@@ -101,6 +101,12 @@ Configuration can be provided via a YAML/JSON file or CLI flags. Typical config 
 
 Contributions welcome: bug reports, additional HSK lists, improved phrase extraction heuristics, and Anki export templates.
 
+## Acknowledgements
+
+English definitions come from [CC-CEDICT](https://cc-cedict.org), licensed under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The bundled copy is
+`data/cedict_ts.u8.gz`.
+
 ## License
 
 See LICENSE (if included) or choose an appropriate license for your project.

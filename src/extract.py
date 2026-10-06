@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import jieba
 
+from .dictionary import get_definition
 from .hsk import get_hsk_level, get_pinyin
 
 # Common single-character Mandarin function words to discard
@@ -44,6 +45,7 @@ class WordOccurrence:
     pinyin: str
     hsk_level: int
     contexts: list[str] = field(default_factory=list)
+    definition: str = ""
 
 
 def extract_words(segments: list[Segment]) -> list[WordOccurrence]:
@@ -76,6 +78,7 @@ def extract_words(segments: list[Segment]) -> list[WordOccurrence]:
                 pinyin=get_pinyin(word),
                 hsk_level=get_hsk_level(word),
                 contexts=contexts,
+                definition=get_definition(word),
             )
         )
 

@@ -142,6 +142,8 @@ def _display_words(words: list) -> None:
             table.add_column(style="dim")
             table.add_row(w.word, w.pinyin, f"HSK {w.hsk_level}" if w.hsk_level else "—")
             console.print(table)
+            if w.definition:
+                console.print(f"  [green]{w.definition}[/green]")
 
             for i, ctx in enumerate(w.contexts, 1):
                 console.print(f"  [dim]{i}.[/dim] {ctx}")
@@ -153,7 +155,7 @@ def _export_csv(words: list, path: str) -> None:
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
             fh,
-            fieldnames=["word", "pinyin", "hsk_level", "frequency", "contexts"],
+            fieldnames=["word", "pinyin", "definition", "hsk_level", "frequency", "contexts"],
         )
         writer.writeheader()
         for w in words:
@@ -161,6 +163,7 @@ def _export_csv(words: list, path: str) -> None:
                 {
                     "word": w.word,
                     "pinyin": w.pinyin,
+                    "definition": w.definition,
                     "hsk_level": w.hsk_level,
                     "frequency": len(w.contexts),
                     "contexts": " | ".join(w.contexts),

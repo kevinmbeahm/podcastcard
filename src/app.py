@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS words (
     episode_id INTEGER NOT NULL REFERENCES episodes(id),
     word       TEXT    NOT NULL,
     pinyin     TEXT    NOT NULL,
+    definition TEXT    NOT NULL DEFAULT '',
     hsk_level  INTEGER NOT NULL,
     frequency  INTEGER NOT NULL DEFAULT 1,
     contexts   TEXT    NOT NULL DEFAULT '[]'
@@ -53,6 +54,10 @@ def _get_db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.executescript(_SCHEMA)
+    # Databases created before definitions existed lack the column.
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(words)")}
+    if "definition" not in cols:
+        con.execute("ALTER TABLE words ADD COLUMN definition TEXT NOT NULL DEFAULT ''")
     con.commit()
     return con
 
@@ -89,6 +94,7 @@ def _words_to_dicts(rows) -> list[dict]:
                 "id": row["id"],
                 "word": row["word"],
                 "pinyin": row["pinyin"],
+                "definition": row["definition"],
                 "hsk_level": row["hsk_level"],
                 "frequency": row["frequency"],
                 "contexts": json.loads(row["contexts"]),
@@ -133,6 +139,7 @@ def _run_pipeline(url: str, model: str, hsk_levels_str: str):
             {
                 "word": occ.word,
                 "pinyin": occ.pinyin,
+                "definition": occ.definition,
                 "hsk_level": occ.hsk_level,
                 "frequency": len(occ.contexts),
                 "contexts": occ.contexts,
@@ -158,12 +165,13 @@ def _save_episode(url: str, title: str, words: list[dict]) -> int:
 
         for w in words:
             con.execute(
-                "INSERT INTO words (episode_id, word, pinyin, hsk_level, frequency, contexts) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO words (episode_id, word, pinyin, definition, hsk_level, frequency, contexts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     episode_id,
                     w["word"],
                     w["pinyin"],
+                    w["definition"],
                     w["hsk_level"],
                     w["frequency"],
                     json.dumps(w["contexts"], ensure_ascii=False),
@@ -268,7 +276,7 @@ async def export_csv(episode_id: int):
             raise HTTPException(status_code=404, detail="Episode not found")
 
         rows = con.execute(
-            "SELECT word, pinyin, hsk_level, frequency, contexts FROM words "
+            "SELECT word, pinyin, definition, hsk_level, frequency, contexts FROM words "
             "WHERE episode_id = ? ORDER BY hsk_level, word",
             (episode_id,),
         ).fetchall()
@@ -277,12 +285,12 @@ async def export_csv(episode_id: int):
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["word", "pinyin", "hsk_level", "frequency", "example_sentence"])
+    writer.writerow(["word", "pinyin", "definition", "hsk_level", "frequency", "example_sentence"])
     for row in rows:
         contexts = json.loads(row["contexts"])
         example = contexts[0] if contexts else ""
         writer.writerow(
-            [row["word"], row["pinyin"], row["hsk_level"], row["frequency"], example]
+            [row["word"], row["pinyin"], row["definition"], row["hsk_level"], row["frequency"], example]
         )
 
     filename = f"episode_{episode_id}.csv"
@@ -345,6 +353,7 @@ async def analyze_stream(
                 {
                     "word": occ.word,
                     "pinyin": occ.pinyin,
+                    "definition": occ.definition,
                     "hsk_level": occ.hsk_level,
                     "frequency": len(occ.contexts),
                     "contexts": occ.contexts,

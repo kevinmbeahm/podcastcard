@@ -455,6 +455,14 @@
       display: block;
     }
 
+    .word-definition {
+      font-size: 0.8rem;
+      color: var(--text);
+      margin-top: 6px;
+      display: block;
+      line-height: 1.35;
+    }
+
     .word-meta {
       display: flex;
       align-items: center;
@@ -912,6 +920,7 @@ function makeWordCard(w) {
     <div class="word-card-top">
       <span class="word-char">${escapeHtml(w.word)}</span>
       <span class="word-pinyin">${escapeHtml(w.pinyin)}</span>
+      ${w.definition ? `<span class="word-definition">${escapeHtml(w.definition)}</span>` : ''}
     </div>
     <div class="word-meta">
       <span class="${badgeClass}">${hskLabel(lv)}</span>

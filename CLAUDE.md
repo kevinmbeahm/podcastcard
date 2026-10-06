@@ -26,6 +26,7 @@ There are two ways to use it:
 - **Web:** `fastapi` + `uvicorn`, SSE for progress streaming
 - **Storage:** `sqlite3` (stdlib, no ORM) — DB file `./podcastcard.db`
 - **HSK data:** bundled `data/hsk_words.json` (~814 words, levels 1–6)
+- **Definitions:** bundled CC-CEDICT (`data/cedict_ts.u8.gz`, ~125k entries, CC BY-SA 4.0)
 
 External system dependency: **FFmpeg** must be installed for audio decoding.
 
@@ -42,6 +43,7 @@ URL → audio.download_audio() → transcribe.transcribe() → extract.extract_w
 | `src/audio.py` | `download_audio(url, output_dir) -> str` (path to mp3) via yt-dlp |
 | `src/transcribe.py` | `transcribe(audio_path, model_size="base") -> list[Segment]` via faster-whisper |
 | `src/extract.py` | `extract_words(segments) -> list[WordOccurrence]`; jieba tokenize + dedup + filter; defines `Segment` and `WordOccurrence` dataclasses |
+| `src/dictionary.py` | `get_definition(word) -> str` — English gloss from CC-CEDICT (lazy-loaded; skips variant/abbr/surname stubs; prefers the reading matching pypinyin) |
 | `src/hsk.py` | `get_hsk_level(word) -> int` (0 = unknown), `get_pinyin(word) -> str`, `HSK_WORDS` dict |
 | `src/cli.py` | Typer app; `run` command; rich display + `words.csv` export |
 | `src/app.py` | FastAPI server; REST + SSE routes; SQLite persistence |
@@ -64,6 +66,7 @@ class WordOccurrence:
     pinyin: str
     hsk_level: int          # 0 = not in HSK list
     contexts: list[str]     # full sentences the word appeared in
+    definition: str = ""    # CC-CEDICT gloss, "" if not found
 ```
 
 Word extraction filters out: punctuation-only tokens, numbers, and common single-char
@@ -81,8 +84,9 @@ HSK level ascending, with unknown (level 0) words last.
 - `GET /episodes/{id}/export.csv` — CSV download
 
 SQLite schema: `episodes(id, url UNIQUE, title, created_at)` and
-`words(id, episode_id, word, pinyin, hsk_level, frequency, contexts)` where `contexts`
-is a JSON-encoded array stored as text.
+`words(id, episode_id, word, pinyin, definition, hsk_level, frequency, contexts)` where `contexts`
+is a JSON-encoded array stored as text. `_get_db()` adds the `definition` column to
+older databases automatically.
 
 `hsk_levels` convention everywhere: comma-separated ints (e.g. `"4,5,6"`) or `"all"`.
 
@@ -113,12 +117,14 @@ uvicorn src.app:app --reload           # http://localhost:8000
 - **Phase 1 (done):** core pipeline + CLI.
 - **Phase 2 (done):** FastAPI web server + single-page UI + SQLite history.
 - **Phase 3 (not started):** Anki `.apkg` export (genanki), per-word audio clips,
-  configurable `config.yaml`, batch processing, richer definitions.
+  configurable `config.yaml`, batch processing, context-aware definitions.
 
 ## Known gaps / things to be aware of
 
-- Definitions are not yet looked up — cards show word, pinyin, HSK level, and context
-  sentences only.
-- HSK lexicon is a curated subset (~814 words), not the complete official lists.
+- Definitions come from CEDICT only: no per-context disambiguation (a polysemous word shows
+  its first usable senses), and names/loanwords may be missing.
+- HSK lexicon is a curated subset (~814 words), not the complete official lists — common
+  words like 喜欢 and 词汇 currently show as "unknown" (level 0). Replacing it with the full
+  HSK 1–6 lists is the highest-value data fix.
 - No automated tests yet.
 - Transcription quality depends heavily on audio clarity and Whisper model size.
