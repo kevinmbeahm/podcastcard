@@ -103,6 +103,9 @@ Contributions welcome: bug reports, additional HSK lists, improved phrase extrac
 
 ## Acknowledgements
 
+HSK word lists come from [complete-hsk-vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary)
+(MIT), compiled into `data/hsk_words.json` by `scripts/build_hsk_words.py`.
+
 English definitions come from [CC-CEDICT](https://cc-cedict.org), licensed under
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The bundled copy is
 `data/cedict_ts.u8.gz`.
