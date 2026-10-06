@@ -22,6 +22,14 @@ app = typer.Typer(
 console = Console()
 
 
+@app.callback()
+def _main() -> None:
+    """Extract and study Mandarin vocabulary from podcast audio."""
+    # A callback keeps Typer in multi-command mode, so `podcastcard run <url>`
+    # works. With a single command and no callback, Typer collapses it and
+    # treats "run" as the URL argument.
+
+
 def _parse_hsk_filter(hsk_levels: str) -> set[int] | None:
     """
     Parse --hsk-levels option.

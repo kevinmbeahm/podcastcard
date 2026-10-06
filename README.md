@@ -28,7 +28,7 @@ Prerequisites:
 
 - Python 3.10+
 - FFmpeg (for audio decoding)
-- A speech model (e.g., Whisper family or cloud ASR key) — configurable in settings
+- Nothing else to configure: the Whisper model is downloaded automatically on first run
 
 Recommended install (example):
 
@@ -40,33 +40,30 @@ pip install -r requirements.txt
 
 ## Usage
 
-Basic CLI example:
+Give it a podcast or video URL (anything `yt-dlp` supports):
 
 ```bash
-podcastcard transcribe \\
-  --input episode01.mp3 \\
-  --output out/episode01 \\
-  --lang zh \\
-  --model small \\
-  --hsk-levels 1,2,3
+python -m src run "https://example.com/episode" --model base --hsk-levels 4,5,6 --output ./output
 ```
 
-Options (common):
+Or start the web UI and paste the URL there:
 
-- `--input`: path to audio file (mp3, m4a, wav, etc.) or directory for batch
-- `--output`: output directory
-- `--lang`: language code (default `zh`)
-- `--model`: transcription model or `auto` (local or cloud)
-- `--hsk-levels`: comma-separated HSK levels to emit or `all`
-- `--min-frequency`: filter words with frequency lower than this
-- `--export-anki`: produce an Anki-compatible deck (CSV or `.apkg`)
+```bash
+uvicorn src.app:app --reload     # http://localhost:8000
+```
 
-Example output files created in the `--output` folder:
+Options for `run`:
 
-- `transcript.vtt` — time-coded transcript
-- `words.csv` — columns: `word`, `pinyin`, `hsk_level`, `frequency`, `example_context`, `first_timestamp`
-- `phrases.csv` — extracted useful multi-word phrases with counts and timestamps
-- `anki_deck.csv` or `anki_deck.apkg` — flashcard-ready output
+- `--model`: Whisper model size — `tiny`, `base` (default), `small`, `medium`, `large-v2`
+- `--hsk-levels`: comma-separated levels to show, e.g. `4,5,6`; `0` is words not on any HSK list; default `all`
+- `--output`: output directory (default `./output`)
+
+Output in the `--output` folder:
+
+- the downloaded audio (`.mp3`)
+- `words.csv` — columns: `word`, `pinyin`, `definition`, `hsk_level`, `frequency`, `contexts` (sentences joined with ` | `)
+
+Planned but not yet implemented: `transcript.vtt`, `phrases.csv`, Anki export, `--min-frequency`, batch mode.
 
 ## How HSK mapping works
 
