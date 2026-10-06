@@ -55,6 +55,7 @@ uvicorn src.app:app --reload     # http://localhost:8000
 Options for `run`:
 
 - `--model`: Whisper model size — `tiny`, `base` (default), `small`, `medium`, `large-v2`
+- `--device`: `auto` (default; GPU if it works, otherwise CPU), `cpu`, or `cuda`
 - `--hsk-levels`: comma-separated levels to show, e.g. `4,5,6`; `0` is words not on any HSK list; default `all`
 - `--output`: output directory (default `./output`)
 

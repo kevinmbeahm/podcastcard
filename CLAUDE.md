@@ -43,7 +43,7 @@ URL → audio.download_audio() → transcribe.transcribe() → extract.extract_w
 | File | Responsibility |
 |------|----------------|
 | `src/audio.py` | `download_audio(url, output_dir) -> str` (path to mp3) via yt-dlp |
-| `src/transcribe.py` | `transcribe(audio_path, model_size="base") -> list[Segment]` via faster-whisper |
+| `src/transcribe.py` | `transcribe(audio_path, model_size="base", device="auto") -> list[Segment]` via faster-whisper; `auto` falls back to CPU (int8) if CUDA libs are missing |
 | `src/extract.py` | `extract_words(segments) -> list[WordOccurrence]`; jieba tokenize + dedup + filter; defines `Segment` and `WordOccurrence` dataclasses |
 | `src/dictionary.py` | `get_definition(word) -> str` — English gloss from CC-CEDICT (lazy-loaded; skips variant/abbr/surname stubs; prefers the reading matching pypinyin) |
 | `src/hsk.py` | `get_hsk_level(word) -> int` (0 = unknown), `get_pinyin(word) -> str`, `HSK_WORDS` dict |

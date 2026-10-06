@@ -57,6 +57,11 @@ def _parse_hsk_filter(hsk_levels: str) -> set[int] | None:
 def run(
     url: str = typer.Argument(..., help="URL of the podcast/video to process."),
     model: str = typer.Option("base", "--model", help="Whisper model size (tiny/base/small/medium/large-v2)."),
+    device: str = typer.Option(
+        "auto",
+        "--device",
+        help="Where to run Whisper: auto (GPU if it works, else CPU), cpu, or cuda.",
+    ),
     hsk_levels: str = typer.Option(
         "all",
         "--hsk-levels",
@@ -72,6 +77,8 @@ def run(
     from .transcribe import transcribe
     from .extract import extract_words, WordOccurrence
 
+    if device not in ("auto", "cpu", "cuda"):
+        raise typer.BadParameter("must be auto, cpu, or cuda", param_hint="--device")
     level_filter = _parse_hsk_filter(hsk_levels)
     output_dir = os.path.abspath(output)
     os.makedirs(output_dir, exist_ok=True)
@@ -105,7 +112,7 @@ def run(
         console=console,
     ) as progress:
         progress.add_task(f"Transcribing with Whisper [{model}]…", total=None)
-        segments = transcribe(audio_path, model_size=model)
+        segments = transcribe(audio_path, model_size=model, device=device)
 
     console.print(f"[green]✓[/green] Transcribed {len(segments)} segments.")
 
