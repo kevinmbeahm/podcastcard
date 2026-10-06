@@ -52,3 +52,18 @@ def test_missing_ffmpeg_gives_install_hint(monkeypatch, tmp_path):
     assert result.exit_code == 1
     assert "brew install ffmpeg" in result.output
     assert "Traceback" not in result.output
+
+
+def test_run_writes_transcript_files_and_anki_deck(monkeypatch, tmp_path):
+    _stub_pipeline(monkeypatch)
+    result = runner.invoke(app, ["run", "http://x", "--output", str(tmp_path), "--anki"])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "transcript.txt").read_text(encoding="utf-8").startswith("[00:00] 我喜欢")
+    assert (tmp_path / "transcript.vtt").read_text(encoding="utf-8").startswith("WEBVTT")
+    assert (tmp_path / "anki_deck.apkg").stat().st_size > 0
+
+
+def test_anki_deck_is_opt_in(monkeypatch, tmp_path):
+    _stub_pipeline(monkeypatch)
+    runner.invoke(app, ["run", "http://x", "--output", str(tmp_path)])
+    assert not (tmp_path / "anki_deck.apkg").exists()

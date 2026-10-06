@@ -68,9 +68,15 @@ def run(
         help="Comma-separated HSK levels to display, e.g. '4,5,6'. Use '0' for unknown words. Default: all.",
     ),
     output: str = typer.Option("./output", "--output", help="Directory for output files."),
+    anki: bool = typer.Option(
+        False, "--anki", help="Also write an Anki deck (anki_deck.apkg) for the displayed words."
+    ),
 ) -> None:
     """
     Full pipeline: download audio → transcribe → extract vocabulary → display & export.
+
+    Writes transcript.vtt and transcript.txt (the full transcript) and words.csv
+    to the output directory.
     """
     # Import here so startup is fast and errors surface only when needed
     from .audio import FFmpegNotFoundError, download_audio
@@ -116,6 +122,16 @@ def run(
 
     console.print(f"[green]✓[/green] Transcribed {len(segments)} segments.")
 
+    from .transcript import format_text, format_vtt
+
+    vtt_path = os.path.join(output_dir, "transcript.vtt")
+    txt_path = os.path.join(output_dir, "transcript.txt")
+    with open(vtt_path, "w", encoding="utf-8") as fh:
+        fh.write(format_vtt(segments))
+    with open(txt_path, "w", encoding="utf-8") as fh:
+        fh.write(format_text(segments))
+    console.print(f"[green]✓[/green] Transcript saved to [bold]{txt_path}[/bold] (+ .vtt)")
+
     # ── Step 3: Extract vocabulary ──────────────────────────────────────────
     words = extract_words(segments)
     console.print(f"[green]✓[/green] Extracted {len(words)} unique words.")
@@ -139,6 +155,16 @@ def run(
     csv_path = os.path.join(output_dir, "words.csv")
     _export_csv(words, csv_path)
     console.print(f"\n[green]✓[/green] Exported [bold]{csv_path}[/bold]")
+
+    if anki:
+        from dataclasses import asdict
+
+        from .anki import write_apkg
+
+        apkg_path = os.path.join(output_dir, "anki_deck.apkg")
+        title = os.path.splitext(os.path.basename(audio_path))[0].replace("::", ":")
+        count = write_apkg([asdict(w) for w in words], apkg_path, f"PodcastCard::{title}", source=title)
+        console.print(f"[green]✓[/green] Anki deck with {count} cards: [bold]{apkg_path}[/bold]")
 
 
 def _display_words(words: list) -> None:

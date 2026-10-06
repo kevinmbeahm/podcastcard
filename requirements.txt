@@ -8,3 +8,4 @@ pydantic
 fastapi
 uvicorn[standard]
 python-multipart
+genanki

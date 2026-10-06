@@ -4,23 +4,21 @@
 
 ## Overview
 
-PodcastCard takes Mandarin podcast audio, generates a time-aligned transcript, then analyzes the transcript to:
+PodcastCard takes a link to a Mandarin podcast or video, downloads the audio, transcribes it locally with Whisper, and then:
 
-- extract words and multi-word phrases
-- annotate each token with pinyin, part-of-speech (optional), and HSK level
-- rank words and phrases by frequency and contextual usefulness
-- export study-ready outputs (CSV, Anki/flashcard-friendly formats, and time-stamped excerpts)
+- gives you the **full transcript**, where any word can be clicked for its pinyin, HSK level, definition and every sentence it appears in
+- extracts the **vocabulary**, organised by HSK level, each word keeping the sentences it came from
+- exports study material: CSV, **Anki decks**, and the transcript as `.txt` / `.vtt`
 
-The tool is intended for Mandarin learners and teachers who want targeted vocabulary study from authentic audio. 
+It is meant for learners who listen to authentic audio and want to look up exactly the words they didn't understand.
 
 ## Features
 
-- High-quality Mandarin transcription (local or cloud models supported)
-- Word/phrase extraction and frequency counts
-- HSK-level mapping (HSK 1–6 and optional extended lists)
-- Export: `words.csv`, `phrases.csv`, `transcript.vtt`, and optional Anki `.apkg` or CSV deck
-- Configurable filters: minimum frequency, part-of-speech filters, phrase length, context window
-- Batch processing for multiple episodes
+- Local Mandarin transcription (`faster-whisper`; no API key; falls back to CPU if GPU libraries are missing)
+- Click-to-define transcript reader with HSK-level highlighting (web app)
+- Word extraction with frequency counts, pinyin, English definitions (CC-CEDICT) and HSK levels 1–6
+- Export: `words.csv`, `transcript.txt`/`.vtt`, and an Anki `.apkg` deck
+- Episode history, so earlier analyses reopen instantly
 
 ## Quick Start
 
@@ -40,67 +38,70 @@ pip install -r requirements.txt
 
 ## Usage
 
-Give it a podcast or video URL (anything `yt-dlp` supports):
+### Web app (recommended)
 
 ```bash
-python -m src run "https://example.com/episode" --model base --hsk-levels 4,5,6 --output ./output
+uvicorn src.app:app --reload     # then open http://localhost:8000
 ```
 
-Or start the web UI and paste the URL there:
+Paste a podcast or video URL (anything `yt-dlp` supports) and click **Analyze**. When it finishes you get:
+
+- **Transcript tab** — the full time-coded transcript. Words at your selected HSK levels are
+  highlighted; click *any* word to see its pinyin, HSK level and definition, plus every sentence in
+  the episode where it appears (click a sentence to jump to it). 🔊 reads the word aloud using your
+  browser's Chinese voice. Download the transcript as `.txt` or `.vtt`.
+- **Vocabulary tab** — the words at the selected HSK levels, grouped by level, each with its
+  definition and example sentences. Export as **CSV** or as an **Anki deck**.
+- **HSK level chips** (top right) choose which levels are highlighted, listed and exported. Your
+  choice is remembered; the default is HSK 4–6.
+- **History** (left) reopens earlier episodes without re-processing.
+
+### Command line
 
 ```bash
-uvicorn src.app:app --reload     # http://localhost:8000
+python -m src run "https://example.com/episode" --model base --hsk-levels 4,5,6 --output ./output --anki
 ```
 
 Options for `run`:
 
 - `--model`: Whisper model size — `tiny`, `base` (default), `small`, `medium`, `large-v2`
 - `--device`: `auto` (default; GPU if it works, otherwise CPU), `cpu`, or `cuda`
-- `--hsk-levels`: comma-separated levels to show, e.g. `4,5,6`; `0` is words not on any HSK list; default `all`
+- `--hsk-levels`: comma-separated levels to show/export, e.g. `4,5,6`; `0` is words not on any HSK list; default `all`
 - `--output`: output directory (default `./output`)
+- `--anki`: also write `anki_deck.apkg`
 
 Output in the `--output` folder:
 
 - the downloaded audio (`.mp3`)
-- `words.csv` — columns: `word`, `pinyin`, `definition`, `hsk_level`, `frequency`, `contexts` (sentences joined with ` | `)
+- `transcript.txt` (with `[mm:ss]` markers) and `transcript.vtt` — the full transcript
+- `words.csv` — `word`, `pinyin`, `definition`, `hsk_level`, `frequency`, `contexts` (sentences joined with ` | `)
+- `anki_deck.apkg` — with `--anki`
 
-Planned but not yet implemented: `transcript.vtt`, `phrases.csv`, Anki export, `--min-frequency`, batch mode.
+### Importing into Anki
+
+In Anki choose **File → Import** and pick the `.apkg`. Each word becomes one note
+(word + an example sentence on the front; pinyin, definition, more sentences and HSK level on
+the back), tagged `podcastcard` and `HSK<n>`. Notes are keyed by word, so importing another
+episode updates words you already have instead of duplicating them.
+
+Planned but not yet implemented: `phrases.csv`, `--min-frequency`, batch mode, audio clips on cards.
 
 ## How HSK mapping works
 
-PodcastCard includes a built-in HSK lexicon that maps common words and phrases to HSK levels 1–6. Behavior is configurable:
-
-- default mapping uses official HSK lists (and community extensions if enabled)
-- unknown words get `hsk_level = 0` (unlisted)
-- you can provide a custom mapping CSV for institutional vocab lists
-
-## Configuration
-
-Configuration can be provided via a YAML/JSON file or CLI flags. Typical config options:
-
-- `transcription.model` (string) — model name or API key
-- `analysis.min_frequency` (int)
-- `analysis.pos_filter` (list)
-- `output.formats` (list)
-- `hsk.mapping_path` (path)
-
-## Advanced usage
-
-- Batch mode: pass a folder to `--input` to process many episodes
-- SRS integration: export Anki-ready decks with sentence context and audio clips
-- Timestamped examples: include short audio clips per word for pronunciation practice
+`data/hsk_words.json` maps words to HSK levels 1–6. It is generated by `scripts/build_hsk_words.py` from the official HSK 2.0 lists, using HSK 3.0 levels 1–6 for words the 2.0 lists lack (such as 说 or 天). Words in neither list get level 0 ("Non-HSK"), which includes names, slang, loanwords and many everyday compounds.
 
 ## Notes & Tips
 
-- Clean audio (good mic, low background noise) greatly improves transcription and word extraction quality.
-- For best results with learner-focused extraction, filter out proper nouns and high-frequency function words using `--min-frequency` and `--pos-filter`.
+- Clean audio (good mic, low background noise) greatly improves transcription. `small` is noticeably more accurate than `base`; use `--device cpu` if you don't have a working CUDA setup.
+- Most jargon and names show up as *Non-HSK*. Switch that chip on in the web app when you want to see them.
 
 ## Contributing
 
-Contributions welcome: bug reports, additional HSK lists, improved phrase extraction heuristics, and Anki export templates.
+Contributions welcome: bug reports, better phrase extraction, and Anki card templates. Run the tests with `pip install -r requirements-dev.txt && pytest`.
 
 ## Acknowledgements
 
+Anki decks are built with [genanki](https://github.com/kerrickstaley/genanki) (MIT).
 HSK word lists come from [complete-hsk-vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary)
 (MIT), compiled into `data/hsk_words.json` by `scripts/build_hsk_words.py`.
 
@@ -111,7 +112,3 @@ English definitions come from [CC-CEDICT](https://cc-cedict.org), licensed under
 ## License
 
 See LICENSE (if included) or choose an appropriate license for your project.
-
----
-
-Want me to add a `requirements.txt`, a sample config, or an example CLI runner script next? Reply with which one and I'll add it.

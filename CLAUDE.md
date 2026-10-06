@@ -11,9 +11,12 @@ sentence context each word appeared in. The goal: a learner can review high-leve
 vocabulary alongside the sentence it was used in.
 
 There are two ways to use it:
-- **CLI** (`python -m src run <url>`) — prints results to the terminal and exports CSV.
-- **Web UI** (`uvicorn src.app:app`) — single-page app with live progress, HSK filtering,
-  expandable context sentences, and episode history.
+- **CLI** (`python -m src run <url>`) — prints results to the terminal; writes the transcript
+  (`transcript.txt`/`.vtt`), `words.csv`, and optionally an Anki deck (`--anki`).
+- **Web UI** (`uvicorn src.app:app`) — single-page app with live progress, a **Transcript** tab
+  (full transcript; click any word for its definition and every sentence it appears in), a
+  **Vocabulary** tab (words at the selected HSK levels with definitions and sentences, CSV and
+  Anki export), and episode history.
 
 ## Tech stack
 
@@ -29,13 +32,16 @@ There are two ways to use it:
   `scripts/build_hsk_words.py` from drkameleon/complete-hsk-vocabulary (MIT): HSK 2.0 levels
   first, HSK 3.0 levels 1–6 as fallback for words 2.0 lacks (e.g. 说), plus a tiny supplement
 - **Definitions:** bundled CC-CEDICT (`data/cedict_ts.u8.gz`, ~125k entries, CC BY-SA 4.0)
+- **Anki export:** `genanki` (`.apkg`)
 
 External system dependency: **FFmpeg** must be installed for audio decoding.
 
 ## Architecture / data flow
 
 ```
-URL → audio.download_audio() → transcribe.transcribe() → extract.extract_words() → HSK lookup → CLI display / Web UI
+URL → audio.download_audio() → transcribe.transcribe() ─┬→ extract.extract_words() → vocabulary (HSK + definitions)
+                                                        └→ transcript.annotate()    → tokenised transcript + lexicon
+                                          → CLI display / web UI / CSV / Anki (.apkg)
 ```
 
 ## File map
@@ -47,12 +53,14 @@ URL → audio.download_audio() → transcribe.transcribe() → extract.extract_w
 | `src/extract.py` | `extract_words(segments) -> list[WordOccurrence]`; jieba tokenize + dedup + filter; defines `Segment` and `WordOccurrence` dataclasses |
 | `src/dictionary.py` | `get_definition(word) -> str` — English gloss from CC-CEDICT (lazy-loaded; skips variant/abbr/surname stubs; prefers the reading matching pypinyin) |
 | `src/hsk.py` | `get_hsk_level(word) -> int` (0 = unknown), `get_pinyin(word) -> str`, `HSK_WORDS` dict |
-| `src/cli.py` | Typer app; `run` command; rich display + `words.csv` export |
+| `src/transcript.py` | `tokenize`, `annotate(segments) -> (segments_with_tokens, lexicon)` (every Chinese token gets pinyin/HSK/definition; unknown compounds get per-character `parts`), `format_vtt`, `format_text` |
+| `src/anki.py` | `write_apkg(words, path, deck_name, source)` via genanki; one note per word (stable GUID per word, so re-importing doesn't duplicate), best example sentence highlighted |
+| `src/cli.py` | Typer app; `run` command (`--model --device --hsk-levels --output --anki`); rich display, `words.csv`, `transcript.txt/.vtt` |
 | `src/app.py` | FastAPI server; REST + SSE routes; SQLite persistence |
 | `src/__main__.py` | Entry point so `python -m src` runs the CLI |
 | `static/index.html` | Single-page UI (vanilla HTML/CSS/JS, no build step, no frameworks) |
 | `data/hsk_words.json` | `{word: hsk_level}` mapping (regenerate with `scripts/build_hsk_words.py`; don't hand-edit) |
-| `tests/test_vocab.py` | pytest: HSK lookup, definitions, extraction (`pip install -r requirements-dev.txt && pytest`) |
+| `tests/` | pytest (`pip install -r requirements-dev.txt && pytest`): `test_vocab` (HSK/definitions/extraction), `test_transcript_anki`, `test_app` (API with stubbed pipeline + temp DB), `test_cli`, `test_transcribe` (CUDA fallback) |
 
 ## Key data shapes
 
@@ -79,17 +87,26 @@ HSK level ascending, with unknown (level 0) words last.
 ## Web API routes (`src/app.py`)
 
 - `GET /` — serves `static/index.html`
-- `POST /analyze` — body `{url, model, hsk_levels}`; runs pipeline synchronously, returns JSON
-- `GET /analyze/stream?url=&model=&hsk_levels=` — SSE; emits stages `downloading` →
-  `transcribing` → `extracting` → `done` (full result on `done`), or `error`
+- `POST /analyze` — body `{url, model, hsk_levels}`; runs the pipeline, returns `{episode_id, words}`
+  (`hsk_levels` only filters the returned words; **everything is stored**)
+- `GET /analyze/stream?url=&model=` — SSE; stages `downloading` → `transcribing` →
+  `extracting` → `done` (`result: {episode_id, title}`), or `error`
 - `GET /episodes` — list past episodes
-- `GET /episodes/{id}/words?hsk_levels=4,5,6` — cached words, optional level filter
-- `GET /episodes/{id}/export.csv` — CSV download
+- `GET /episodes/{id}/words?hsk_levels=4,5,6` — stored words (with definitions/contexts), optional level filter
+- `GET /episodes/{id}/transcript` — `{episode, segments:[{start,end,text,tokens}], lexicon:{token:{pinyin,hsk_level,definition[,parts]}}}`
+- `GET /episodes/{id}/transcript.vtt` / `transcript.txt` — transcript downloads
+- `GET /episodes/{id}/export.csv?hsk_levels=` / `anki.apkg?hsk_levels=` — vocabulary downloads
+  (Anki returns 404 if no words match the levels)
 
-SQLite schema: `episodes(id, url UNIQUE, title, created_at)` and
+Routes are plain `def` (not `async`) because the pipeline blocks; FastAPI runs them in a thread pool.
+
+SQLite schema: `episodes(id, url UNIQUE, title, created_at, lexicon)`,
 `words(id, episode_id, word, pinyin, definition, hsk_level, frequency, contexts)` where `contexts`
-is a JSON-encoded array stored as text. `_get_db()` adds the `definition` column to
-older databases automatically.
+is a JSON array stored as text, and `segments(id, episode_id, idx, start, end, text, tokens)`
+(`tokens` = JSON array). `lexicon` is a JSON object. Tokenisation and the lexicon are computed once
+at analysis time and stored. `_get_db()` runs `_MIGRATIONS` to add columns missing from older DBs;
+episodes analysed before transcripts existed simply have no segments (the UI says so).
+Re-analysing a URL updates its episode row in place.
 
 `hsk_levels` convention everywhere: comma-separated ints (e.g. `"4,5,6"`) or `"all"`.
 
@@ -99,7 +116,7 @@ older databases automatically.
 pip install -r requirements.txt        # also needs FFmpeg installed system-wide
 
 # CLI
-python -m src run "<url>" --model base --hsk-levels 4,5,6 --output ./output
+python -m src run "<url>" --model base --hsk-levels 4,5,6 --output ./output [--anki] [--device cpu]
 
 # Web
 uvicorn src.app:app --reload           # http://localhost:8000
@@ -112,6 +129,9 @@ uvicorn src.app:app --reload           # http://localhost:8000
 - Pipeline modules (`audio`, `transcribe`, `extract`, `hsk`) are pure/importable and have
   no CLI or web coupling — keep it that way so both front-ends share one core.
 - `static/index.html` is intentionally dependency-free (no npm, no CDN). Keep it vanilla.
+  The HSK level chips are a *view* filter (stored in `localStorage` as `pc.levels`, default 4–6):
+  they control transcript highlighting (CSS classes `show-N` on `#transcript`), the Vocabulary
+  list, and the `hsk_levels` param of the CSV/Anki links. Analysis itself always stores every word.
 - Commit author must be `Claude <noreply@anthropic.com>` or pushes show as Unverified.
 - `.claude/` is gitignored.
 
@@ -119,8 +139,9 @@ uvicorn src.app:app --reload           # http://localhost:8000
 
 - **Phase 1 (done):** core pipeline + CLI.
 - **Phase 2 (done):** FastAPI web server + single-page UI + SQLite history.
-- **Phase 3 (not started):** Anki `.apkg` export (genanki), per-word audio clips,
-  configurable `config.yaml`, batch processing, context-aware definitions.
+- **Phase 3 (partly done):** definitions ✔, full HSK lists ✔, transcript + click-to-define reader ✔,
+  Anki `.apkg` export ✔. Still open: per-word audio clips on cards, `config.yaml`, batch
+  processing, context-aware definitions, HSK-standard option, play/seek audio in the reader.
 
 ## Known gaps / things to be aware of
 
@@ -129,6 +150,11 @@ uvicorn src.app:app --reload           # http://localhost:8000
 - HSK levels mix standards: HSK 2.0 where available, HSK 3.0 (levels 1–6) otherwise. HSK 3.0's
   7–9 band is not represented (those words are level 0). A `--standard` option would be a
   natural extension.
-- Tests cover only vocab/extraction; the download→transcribe path has not been exercised
-  against real audio yet.
+- Automated tests stub the download/Whisper steps. The browser reader was checked with
+  Playwright against seeded data (that script is not in the repo).
+- Tokens that aren't whole entries in the HSK lists (e.g. 一个, 一下, 几种) count as "Non-HSK"
+  even though they are trivial compounds, which makes the Non-HSK level noisy. Treating
+  compounds made of known characters/words as known would fix it.
+- Whisper may emit Traditional characters for some audio; the HSK/CEDICT lookups are keyed on
+  Simplified, so those words show as unknown.
 - Transcription quality depends heavily on audio clarity and Whisper model size.

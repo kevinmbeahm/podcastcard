@@ -1,4 +1,4 @@
-"""FastAPI web server for PodcastCard — Phase 2."""
+"""FastAPI web server for PodcastCard."""
 
 from __future__ import annotations
 
@@ -10,18 +10,23 @@ import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timezone
-from typing import Optional
+from pathlib import Path
+from typing import Iterator, Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Allow imports from project root when run via uvicorn src.app:app
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from src.anki import write_apkg
 from src.audio import download_audio
+from src.extract import Segment, extract_words
 from src.transcribe import transcribe
-from src.extract import extract_words
+from src.transcript import annotate, format_text, format_vtt
 
 # ---------------------------------------------------------------------------
 # Database
@@ -34,7 +39,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     url        TEXT    UNIQUE NOT NULL,
     title      TEXT    NOT NULL,
-    created_at TEXT    NOT NULL
+    created_at TEXT    NOT NULL,
+    lexicon    TEXT    NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS words (
@@ -47,17 +53,34 @@ CREATE TABLE IF NOT EXISTS words (
     frequency  INTEGER NOT NULL DEFAULT 1,
     contexts   TEXT    NOT NULL DEFAULT '[]'
 );
+
+CREATE TABLE IF NOT EXISTS segments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id INTEGER NOT NULL REFERENCES episodes(id),
+    idx        INTEGER NOT NULL,
+    start      REAL    NOT NULL,
+    end        REAL    NOT NULL,
+    text       TEXT    NOT NULL,
+    tokens     TEXT    NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS segments_episode ON segments(episode_id, idx);
 """
+
+# Columns added after the first release: (table, column, definition)
+_MIGRATIONS = [
+    ("words", "definition", "TEXT NOT NULL DEFAULT ''"),
+    ("episodes", "lexicon", "TEXT NOT NULL DEFAULT '{}'"),
+]
 
 
 def _get_db() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.executescript(_SCHEMA)
-    # Databases created before definitions existed lack the column.
-    cols = {r["name"] for r in con.execute("PRAGMA table_info(words)")}
-    if "definition" not in cols:
-        con.execute("ALTER TABLE words ADD COLUMN definition TEXT NOT NULL DEFAULT ''")
+    for table, column, ddl in _MIGRATIONS:
+        cols = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     con.commit()
     return con
 
@@ -66,18 +89,17 @@ def _get_db() -> sqlite3.Connection:
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="PodcastCard", version="2.0.0")
-
-# Mount static files (CSS/JS assets served from /static/*)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app = FastAPI(title="PodcastCard", version="2.1.0")
+app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _parse_hsk_levels(hsk_levels: str) -> list[int] | None:
-    """Parse comma-separated HSK level string.  Returns None for 'all'."""
+
+def _parse_hsk_levels(hsk_levels: Optional[str]) -> list[int] | None:
+    """Parse a comma-separated HSK level string.  Returns None for 'all'."""
     if not hsk_levels or hsk_levels.strip().lower() == "all":
         return None
     try:
@@ -87,20 +109,53 @@ def _parse_hsk_levels(hsk_levels: str) -> list[int] | None:
 
 
 def _words_to_dicts(rows) -> list[dict]:
-    result = []
-    for row in rows:
-        result.append(
-            {
-                "id": row["id"],
-                "word": row["word"],
-                "pinyin": row["pinyin"],
-                "definition": row["definition"],
-                "hsk_level": row["hsk_level"],
-                "frequency": row["frequency"],
-                "contexts": json.loads(row["contexts"]),
-            }
-        )
-    return result
+    return [
+        {
+            "id": row["id"],
+            "word": row["word"],
+            "pinyin": row["pinyin"],
+            "definition": row["definition"],
+            "hsk_level": row["hsk_level"],
+            "frequency": row["frequency"],
+            "contexts": json.loads(row["contexts"]),
+        }
+        for row in rows
+    ]
+
+
+def _require_episode(con: sqlite3.Connection, episode_id: int) -> sqlite3.Row:
+    ep = con.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,)).fetchone()
+    if ep is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    return ep
+
+
+def _select_words(con: sqlite3.Connection, episode_id: int, hsk_levels: Optional[str]) -> list[dict]:
+    """An episode's words, optionally restricted to some HSK levels."""
+    levels = _parse_hsk_levels(hsk_levels)
+    sql = "SELECT * FROM words WHERE episode_id = ?"
+    params: list = [episode_id]
+    if levels is not None:
+        sql += f" AND hsk_level IN ({','.join('?' * len(levels))})"
+        params += levels
+    rows = con.execute(sql + " ORDER BY hsk_level = 0, hsk_level, word", params).fetchall()
+    return _words_to_dicts(rows)
+
+
+def _load_segments(con: sqlite3.Connection, episode_id: int) -> list[Segment]:
+    rows = con.execute(
+        "SELECT start, end, text FROM segments WHERE episode_id = ? ORDER BY idx", (episode_id,)
+    ).fetchall()
+    return [Segment(r["start"], r["end"], r["text"]) for r in rows]
+
+
+def _download_headers(episode_id: int, title: str, ext: str) -> dict[str, str]:
+    """Content-Disposition with an ASCII fallback plus the real (Unicode) title."""
+    pretty = quote(f"{title}.{ext}")
+    return {
+        "Content-Disposition": f"attachment; filename=\"episode_{episode_id}.{ext}\"; "
+        f"filename*=UTF-8''{pretty}"
+    }
 
 
 def _fetch_video_title(url: str) -> str:
@@ -116,57 +171,38 @@ def _fetch_video_title(url: str) -> str:
         return url
 
 
-def _run_pipeline(url: str, model: str, hsk_levels_str: str):
-    """
-    Download → transcribe → extract.
-
-    Returns (title, words_list) where words_list is a list of dicts.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        audio_path = download_audio(url, tmp)
-        segments = transcribe(audio_path, model_size=model)
-
-    occurrences = extract_words(segments)
-
-    levels_filter = _parse_hsk_levels(hsk_levels_str)
-    if levels_filter is not None:
-        occurrences = [w for w in occurrences if w.hsk_level in levels_filter]
-
-    # Build word dicts with frequency = number of context sentences
-    words = []
-    for occ in occurrences:
-        words.append(
-            {
-                "word": occ.word,
-                "pinyin": occ.pinyin,
-                "definition": occ.definition,
-                "hsk_level": occ.hsk_level,
-                "frequency": len(occ.contexts),
-                "contexts": occ.contexts,
-            }
-        )
-
-    return words
-
-
-def _save_episode(url: str, title: str, words: list[dict]) -> int:
-    """Persist episode + words to DB.  Returns episode_id."""
+def _save_episode(
+    url: str,
+    title: str,
+    words: list[dict],
+    segments: list[dict] | None = None,
+    lexicon: dict | None = None,
+) -> int:
+    """Persist (or replace) an episode with its words and transcript. Returns its id."""
     con = _get_db()
     try:
         now = datetime.now(timezone.utc).isoformat()
-        cur = con.execute(
-            "INSERT OR REPLACE INTO episodes (url, title, created_at) VALUES (?, ?, ?)",
-            (url, title, now),
-        )
-        episode_id = cur.lastrowid
-
-        # Delete old words if episode already existed
-        con.execute("DELETE FROM words WHERE episode_id = ?", (episode_id,))
-
-        for w in words:
+        lexicon_json = json.dumps(lexicon or {}, ensure_ascii=False)
+        row = con.execute("SELECT id FROM episodes WHERE url = ?", (url,)).fetchone()
+        if row:
+            episode_id = row["id"]
             con.execute(
-                "INSERT INTO words (episode_id, word, pinyin, definition, hsk_level, frequency, contexts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "UPDATE episodes SET title = ?, created_at = ?, lexicon = ? WHERE id = ?",
+                (title, now, lexicon_json, episode_id),
+            )
+            con.execute("DELETE FROM words WHERE episode_id = ?", (episode_id,))
+            con.execute("DELETE FROM segments WHERE episode_id = ?", (episode_id,))
+        else:
+            cur = con.execute(
+                "INSERT INTO episodes (url, title, created_at, lexicon) VALUES (?, ?, ?, ?)",
+                (url, title, now, lexicon_json),
+            )
+            episode_id = cur.lastrowid
+
+        con.executemany(
+            "INSERT INTO words (episode_id, word, pinyin, definition, hsk_level, frequency, contexts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
                 (
                     episode_id,
                     w["word"],
@@ -175,12 +211,71 @@ def _save_episode(url: str, title: str, words: list[dict]) -> int:
                     w["hsk_level"],
                     w["frequency"],
                     json.dumps(w["contexts"], ensure_ascii=False),
-                ),
-            )
+                )
+                for w in words
+            ],
+        )
+        con.executemany(
+            "INSERT INTO segments (episode_id, idx, start, end, text, tokens) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (episode_id, i, s["start"], s["end"], s["text"], json.dumps(s["tokens"], ensure_ascii=False))
+                for i, s in enumerate(segments or [])
+            ],
+        )
         con.commit()
         return episode_id
     finally:
         con.close()
+
+
+def _pipeline(url: str, model: str) -> Iterator[dict]:
+    """Download → transcribe → extract → save, yielding progress events.
+
+    Events are ``{"stage", "message"}``; the last is either ``stage == "done"``
+    (with ``result``) or ``stage == "error"``.
+    """
+    yield {"stage": "downloading", "message": "Fetching audio…"}
+    title = _fetch_video_title(url)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            audio_path = download_audio(url, tmp)
+        except Exception as exc:
+            yield {"stage": "error", "message": f"Download failed: {exc}"}
+            return
+
+        yield {"stage": "transcribing", "message": "Transcribing audio with Whisper…"}
+        try:
+            segments = transcribe(audio_path, model_size=model)
+        except Exception as exc:
+            yield {"stage": "error", "message": f"Transcription failed: {exc}"}
+            return
+
+    yield {"stage": "extracting", "message": "Extracting Chinese vocabulary…"}
+    try:
+        # Every word is stored: the HSK filter is applied when viewing/exporting.
+        words = [
+            {
+                "word": occ.word,
+                "pinyin": occ.pinyin,
+                "definition": occ.definition,
+                "hsk_level": occ.hsk_level,
+                "frequency": len(occ.contexts),
+                "contexts": occ.contexts,
+            }
+            for occ in extract_words(segments)
+        ]
+        annotated, lexicon = annotate(segments)
+        episode_id = _save_episode(url, title, words, annotated, lexicon)
+    except Exception as exc:
+        yield {"stage": "error", "message": f"Extraction failed: {exc}"}
+        return
+
+    yield {
+        "stage": "done",
+        "message": f"Found {len(words)} words in {len(segments)} transcript segments.",
+        "result": {"episode_id": episode_id, "title": title},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -191,13 +286,7 @@ def _save_episode(url: str, title: str, words: list[dict]) -> int:
 @app.get("/", response_class=HTMLResponse)
 async def index():
     """Serve the single-page UI."""
-    html_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "static",
-        "index.html",
-    )
-    with open(html_path, encoding="utf-8") as fh:
-        return HTMLResponse(content=fh.read())
+    return HTMLResponse((ROOT / "static" / "index.html").read_text(encoding="utf-8"))
 
 
 class AnalyzeRequest(BaseModel):
@@ -207,20 +296,43 @@ class AnalyzeRequest(BaseModel):
 
 
 @app.post("/analyze")
-async def analyze(req: AnalyzeRequest):
-    """Run full pipeline synchronously and return results."""
-    title = _fetch_video_title(req.url)
+def analyze(req: AnalyzeRequest):
+    """Run the full pipeline and return the episode id and its (filtered) words."""
+    final: dict = {}
+    for event in _pipeline(req.url, req.model):
+        final = event
+    if final.get("stage") != "done":
+        raise HTTPException(status_code=500, detail=final.get("message", "Analysis failed"))
+    episode_id = final["result"]["episode_id"]
+    con = _get_db()
     try:
-        words = _run_pipeline(req.url, req.model, req.hsk_levels)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    episode_id = _save_episode(req.url, title, words)
+        words = _select_words(con, episode_id, req.hsk_levels)
+    finally:
+        con.close()
     return JSONResponse({"episode_id": episode_id, "words": words})
 
 
+@app.get("/analyze/stream")
+def analyze_stream(url: str = Query(...), model: str = Query(default="base")):
+    """SSE endpoint — streams pipeline progress events."""
+
+    def _generate():
+        try:
+            for event in _pipeline(url, model):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:  # last-resort guard so the client always gets an end event
+            err = {"stage": "error", "message": f"Unexpected error: {exc}"}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/episodes")
-async def list_episodes():
+def list_episodes():
     """Return list of all episodes."""
     con = _get_db()
     try:
@@ -233,150 +345,122 @@ async def list_episodes():
 
 
 @app.get("/episodes/{episode_id}/words")
-async def get_episode_words(
-    episode_id: int, hsk_levels: Optional[str] = Query(default=None)
-):
+def get_episode_words(episode_id: int, hsk_levels: Optional[str] = Query(default=None)):
     """Return words for an episode, optionally filtered by HSK level."""
     con = _get_db()
     try:
-        ep = con.execute(
-            "SELECT id FROM episodes WHERE id = ?", (episode_id,)
-        ).fetchone()
-        if ep is None:
-            raise HTTPException(status_code=404, detail="Episode not found")
-
-        levels_filter = _parse_hsk_levels(hsk_levels or "all")
-        if levels_filter is not None:
-            placeholders = ",".join("?" * len(levels_filter))
-            rows = con.execute(
-                f"SELECT * FROM words WHERE episode_id = ? AND hsk_level IN ({placeholders}) "
-                f"ORDER BY hsk_level, word",
-                [episode_id, *levels_filter],
-            ).fetchall()
-        else:
-            rows = con.execute(
-                "SELECT * FROM words WHERE episode_id = ? ORDER BY hsk_level, word",
-                (episode_id,),
-            ).fetchall()
-
-        return JSONResponse(_words_to_dicts(rows))
+        _require_episode(con, episode_id)
+        return JSONResponse(_select_words(con, episode_id, hsk_levels))
     finally:
         con.close()
 
 
-@app.get("/episodes/{episode_id}/export.csv")
-async def export_csv(episode_id: int):
-    """Export episode words as CSV download."""
+@app.get("/episodes/{episode_id}/transcript")
+def get_transcript(episode_id: int):
+    """The full transcript, tokenised, plus a lexicon for looking up any word in it."""
     con = _get_db()
     try:
-        ep = con.execute(
-            "SELECT title FROM episodes WHERE id = ?", (episode_id,)
-        ).fetchone()
-        if ep is None:
-            raise HTTPException(status_code=404, detail="Episode not found")
-
+        ep = _require_episode(con, episode_id)
         rows = con.execute(
-            "SELECT word, pinyin, definition, hsk_level, frequency, contexts FROM words "
-            "WHERE episode_id = ? ORDER BY hsk_level, word",
+            "SELECT start, end, text, tokens FROM segments WHERE episode_id = ? ORDER BY idx",
             (episode_id,),
         ).fetchall()
+        return JSONResponse(
+            {
+                "episode": {"id": ep["id"], "url": ep["url"], "title": ep["title"]},
+                "segments": [
+                    {
+                        "start": r["start"],
+                        "end": r["end"],
+                        "text": r["text"],
+                        "tokens": json.loads(r["tokens"]),
+                    }
+                    for r in rows
+                ],
+                "lexicon": json.loads(ep["lexicon"]),
+            }
+        )
+    finally:
+        con.close()
+
+
+@app.get("/episodes/{episode_id}/transcript.vtt")
+def export_vtt(episode_id: int):
+    """Time-coded transcript as a WebVTT file."""
+    con = _get_db()
+    try:
+        ep = _require_episode(con, episode_id)
+        segments = _load_segments(con, episode_id)
+    finally:
+        con.close()
+    return Response(
+        format_vtt(segments),
+        media_type="text/vtt; charset=utf-8",
+        headers=_download_headers(episode_id, ep["title"], "vtt"),
+    )
+
+
+@app.get("/episodes/{episode_id}/transcript.txt")
+def export_transcript_text(episode_id: int):
+    """Plain-text transcript with [mm:ss] markers."""
+    con = _get_db()
+    try:
+        ep = _require_episode(con, episode_id)
+        segments = _load_segments(con, episode_id)
+    finally:
+        con.close()
+    return Response(
+        format_text(segments),
+        media_type="text/plain; charset=utf-8",
+        headers=_download_headers(episode_id, ep["title"], "txt"),
+    )
+
+
+@app.get("/episodes/{episode_id}/export.csv")
+def export_csv(episode_id: int, hsk_levels: Optional[str] = Query(default=None)):
+    """Export episode words as a CSV download (optionally only some HSK levels)."""
+    con = _get_db()
+    try:
+        ep = _require_episode(con, episode_id)
+        words = _select_words(con, episode_id, hsk_levels)
     finally:
         con.close()
 
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["word", "pinyin", "definition", "hsk_level", "frequency", "example_sentence"])
-    for row in rows:
-        contexts = json.loads(row["contexts"])
-        example = contexts[0] if contexts else ""
+    for w in words:
+        example = w["contexts"][0] if w["contexts"] else ""
         writer.writerow(
-            [row["word"], row["pinyin"], row["definition"], row["hsk_level"], row["frequency"], example]
+            [w["word"], w["pinyin"], w["definition"], w["hsk_level"], w["frequency"], example]
         )
-
-    filename = f"episode_{episode_id}.csv"
-    buf.seek(0)
-    return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    return Response(
+        buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers=_download_headers(episode_id, ep["title"], "csv"),
     )
 
 
-@app.get("/analyze/stream")
-async def analyze_stream(
-    url: str = Query(...),
-    model: str = Query(default="base"),
-    hsk_levels: str = Query(default="all"),
-):
-    """SSE endpoint — streams pipeline progress events."""
+@app.get("/episodes/{episode_id}/anki.apkg")
+def export_anki(episode_id: int, hsk_levels: Optional[str] = Query(default=None)):
+    """Export episode words as an importable Anki deck (optionally only some HSK levels)."""
+    con = _get_db()
+    try:
+        ep = _require_episode(con, episode_id)
+        words = _select_words(con, episode_id, hsk_levels)
+    finally:
+        con.close()
+    if not words:
+        raise HTTPException(status_code=404, detail="No words match the selected HSK levels")
 
-    def _event(stage: str, message: str, result=None) -> str:
-        payload: dict = {"stage": stage, "message": message}
-        if result is not None:
-            payload["result"] = result
-        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-    def _generate():
-        try:
-            yield _event("downloading", "Fetching audio…")
-
-            title = _fetch_video_title(url)
-
-            with tempfile.TemporaryDirectory() as tmp:
-                try:
-                    audio_path = download_audio(url, tmp)
-                except Exception as exc:
-                    yield _event("error", f"Download failed: {exc}")
-                    return
-
-                yield _event("transcribing", "Transcribing audio with Whisper…")
-
-                try:
-                    segments = transcribe(audio_path, model_size=model)
-                except Exception as exc:
-                    yield _event("error", f"Transcription failed: {exc}")
-                    return
-
-            yield _event("extracting", "Extracting Chinese vocabulary…")
-
-            try:
-                occurrences = extract_words(segments)
-            except Exception as exc:
-                yield _event("error", f"Extraction failed: {exc}")
-                return
-
-            levels_filter = _parse_hsk_levels(hsk_levels)
-            if levels_filter is not None:
-                occurrences = [w for w in occurrences if w.hsk_level in levels_filter]
-
-            words = [
-                {
-                    "word": occ.word,
-                    "pinyin": occ.pinyin,
-                    "definition": occ.definition,
-                    "hsk_level": occ.hsk_level,
-                    "frequency": len(occ.contexts),
-                    "contexts": occ.contexts,
-                }
-                for occ in occurrences
-            ]
-
-            episode_id = _save_episode(url, title, words)
-
-            yield _event(
-                "done",
-                f"Found {len(words)} words.",
-                result={"episode_id": episode_id, "title": title, "words": words},
-            )
-
-        except Exception as exc:
-            yield _event("error", f"Unexpected error: {exc}")
-
-    return StreamingResponse(
-        _generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    # "::" would make Anki create sub-decks, so keep it out of the episode title.
+    deck_name = f"PodcastCard::{ep['title'].replace('::', ':')}"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "deck.apkg"
+        write_apkg(words, path, deck_name, source=ep["title"])
+        data = path.read_bytes()
+    return Response(
+        data,
+        media_type="application/octet-stream",
+        headers=_download_headers(episode_id, ep["title"], "apkg"),
     )

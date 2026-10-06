@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>PodcastCard</title>
+  <link rel="icon" href="data:," />
   <style>
     /* ------------------------------------------------------------------ Reset */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -333,75 +334,290 @@
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* ------------------------------------------------------------------ Results */
+    [hidden] { display: none !important; }
+
+    /* Bound the page height so the results pane scrolls on its own (keeps the
+       toolbar and word panel sticky). */
+    body { height: 100vh; overflow: hidden; }
+    .layout { min-height: 0; }
+
+    :root { --cjk: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif; }
+
     #results-section {
       flex: 1;
       overflow-y: auto;
-      padding: 20px 24px;
+      padding: 0 24px 32px;
       display: none;
     }
 
     #results-section.visible { display: block; }
 
-    /* Summary bar */
-    #summary-bar {
+    /* Episode heading + toolbar */
+    #episode-head {
       display: flex;
-      align-items: center;
-      gap: 16px;
+      align-items: baseline;
+      gap: 12px;
+      padding-top: 18px;
       flex-wrap: wrap;
-      margin-bottom: 16px;
     }
 
-    #summary-text {
-      font-size: 0.9rem;
+    #episode-title { font-size: 1.15rem; line-height: 1.3; }
+
+    #episode-link { font-size: 0.8rem; }
+
+    #toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px 24px;
+      flex-wrap: wrap;
+      padding: 12px 0;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .main-tabs { display: flex; gap: 4px; }
+
+    .main-tab {
+      background: none;
+      border: none;
+      border-bottom: 3px solid transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 6px 14px;
+      transition: color var(--transition), border-color var(--transition);
+    }
+
+    .main-tab:hover { color: var(--text); }
+    .main-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+    .main-tab .count {
+      font-size: 0.72rem;
+      background: var(--surface2);
+      border-radius: 20px;
+      padding: 1px 8px;
+      margin-left: 4px;
       color: var(--text-muted);
     }
 
-    #export-btn {
+    .level-filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .level-filter .filter-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .level-filter .hsk-checkboxes { gap: 5px; }
+
+    .btn-link {
       background: var(--surface2);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
       color: var(--text);
       cursor: pointer;
-      font-size: 0.85rem;
-      padding: 6px 14px;
-      transition: background var(--transition);
-      margin-left: auto;
+      font-size: 0.82rem;
+      padding: 6px 12px;
+      text-decoration: none;
+      transition: border-color var(--transition);
+      white-space: nowrap;
     }
 
-    #export-btn:hover { background: var(--surface); }
+    .btn-link:hover { border-color: var(--accent); text-decoration: none; }
+    .btn-link.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-link[aria-disabled="true"] { opacity: 0.4; pointer-events: none; }
 
-    /* Filter tabs */
-    #filter-tabs {
+    .panel-bar {
       display: flex;
-      gap: 6px;
+      align-items: center;
+      gap: 10px;
       flex-wrap: wrap;
-      margin-bottom: 20px;
+      margin-bottom: 14px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
     }
 
-    .tab-btn {
+    .panel-bar .spacer { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .notice {
+      background: var(--surface);
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      color: var(--text-muted);
+      padding: 28px;
+      text-align: center;
+    }
+
+    /* HSK badges */
+    .hsk-badge {
+      font-size: 0.7rem;
+      font-weight: 700;
+      border-radius: 4px;
+      padding: 2px 7px;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    .hsk-badge.lv1 { background: var(--hsk1); color: #000; }
+    .hsk-badge.lv2 { background: var(--hsk2); color: #000; }
+    .hsk-badge.lv3 { background: var(--hsk3); color: #000; }
+    .hsk-badge.lv4 { background: var(--hsk4); color: #fff; }
+    .hsk-badge.lv5 { background: var(--hsk5); color: #fff; }
+    .hsk-badge.lv6 { background: var(--hsk6); color: #fff; }
+    .hsk-badge.lv0 { background: var(--hsk0); color: #fff; }
+
+    /* ---- Transcript reader */
+    .reader {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .seg {
+      display: flex;
+      gap: 12px;
+      padding: 6px 10px;
+      border-radius: 8px;
+      transition: background 600ms ease;
+    }
+
+    .seg.flash { background: color-mix(in srgb, var(--accent) 28%, transparent); transition: none; }
+
+    .ts {
+      flex: none;
+      width: 3.6em;
+      padding-top: 0.55em;
+      font-size: 0.72rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+    }
+
+    .seg-text {
+      font-family: var(--cjk);
+      font-size: 1.3rem;
+      line-height: 2.1;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .tok {
+      --c: var(--hsk0);
+      border-radius: 4px;
+      cursor: pointer;
+      padding: 0 1px;
+      transition: background var(--transition);
+    }
+
+    .tok.lv1 { --c: var(--hsk1); }
+    .tok.lv2 { --c: var(--hsk2); }
+    .tok.lv3 { --c: var(--hsk3); }
+    .tok.lv4 { --c: var(--hsk4); }
+    .tok.lv5 { --c: var(--hsk5); }
+    .tok.lv6 { --c: var(--hsk6); }
+
+    .tok:hover { background: var(--surface2); }
+
+    /* Words at the selected levels get a coloured highlight */
+    .show-1 .tok.lv1, .show-2 .tok.lv2, .show-3 .tok.lv3, .show-4 .tok.lv4,
+    .show-5 .tok.lv5, .show-6 .tok.lv6, .show-0 .tok.lv0 {
+      background: color-mix(in srgb, var(--c) 20%, transparent);
+      box-shadow: inset 0 -2px 0 var(--c);
+    }
+
+    .tok.sel, .tok.sel:hover {
+      background: var(--accent);
+      box-shadow: none;
+      color: #fff;
+      outline: 2px solid var(--text);
+      outline-offset: 1px;
+    }
+
+    /* Word panel */
+    .word-panel {
+      position: sticky;
+      top: 78px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      max-height: calc(100vh - 110px);
+      overflow-y: auto;
+    }
+
+    .wp-hint { color: var(--text-muted); font-size: 0.9rem; text-align: center; padding: 24px 8px; }
+
+    .wp-close {
+      display: none;
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1.1rem;
+    }
+
+    .wp-word { font-family: var(--cjk); font-size: 2.6rem; font-weight: 700; line-height: 1.2; }
+
+    .wp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
+
+    .wp-pinyin { font-size: 1.05rem; color: var(--accent2); }
+
+    .speak {
       background: var(--surface2);
       border: 1px solid var(--border);
       border-radius: 20px;
-      color: var(--text-muted);
       cursor: pointer;
-      font-size: 0.82rem;
-      font-weight: 600;
-      padding: 5px 14px;
-      transition: all var(--transition);
+      font-size: 0.9rem;
+      padding: 2px 10px;
     }
 
-    .tab-btn:hover { border-color: var(--accent); color: var(--text); }
-    .tab-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .speak:hover { border-color: var(--accent); }
 
-    /* Word sections */
+    .wp-def { font-size: 1rem; line-height: 1.5; margin-bottom: 12px; }
+    .wp-def.muted { color: var(--text-muted); font-size: 0.9rem; }
+
+    .wp-parts { list-style: none; margin-bottom: 12px; }
+    .wp-parts li { font-size: 0.88rem; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .wp-parts .cjk { font-family: var(--cjk); font-size: 1.2rem; margin-right: 6px; }
+    .wp-parts .pin { color: var(--accent2); margin-right: 6px; }
+
+    .wp-panel-title {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin: 14px 0 6px;
+    }
+
+    .sent-list { list-style: none; }
+
+    .sent-link {
+      width: 100%;
+      background: none;
+      border: none;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      cursor: pointer;
+      display: flex;
+      gap: 10px;
+      font-family: var(--cjk);
+      font-size: 0.95rem;
+      line-height: 1.6;
+      padding: 7px 4px;
+      text-align: left;
+    }
+
+    .sent-link:hover { background: var(--surface2); }
+    .sent-link .ts { width: auto; padding-top: 0.25em; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .sent-link mark, .vr-sents mark { background: none; color: var(--accent2); font-weight: 700; }
+
+    /* ---- Vocabulary tab */
     .hsk-section { margin-bottom: 28px; }
 
-    .hsk-section-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
+    .hsk-section-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 
     .hsk-section-header h3 {
       font-size: 0.9rem;
@@ -418,127 +634,93 @@
       padding: 2px 10px;
     }
 
-    /* Word grid */
-    .word-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 10px;
-    }
+    .vocab-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 10px; }
 
-    /* Word card */
-    .word-card {
+    .vocab-row {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      overflow: hidden;
-      transition: border-color var(--transition), transform var(--transition);
-      cursor: pointer;
+      padding: 14px 16px;
     }
 
-    .word-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .vr-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 
-    .word-card-top {
-      padding: 14px 14px 10px;
-    }
-
-    .word-char {
-      font-size: 2rem;
-      font-weight: 700;
-      line-height: 1.1;
-      display: block;
-    }
-
-    .word-pinyin {
-      font-size: 0.8rem;
-      color: var(--text-muted);
-      margin-top: 3px;
-      display: block;
-    }
-
-    .word-definition {
-      font-size: 0.8rem;
+    .vr-word {
+      background: none;
+      border: none;
       color: var(--text);
-      margin-top: 6px;
-      display: block;
-      line-height: 1.35;
-    }
-
-    .word-meta {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 6px 14px 10px;
-    }
-
-    .hsk-badge {
-      font-size: 0.7rem;
+      cursor: pointer;
+      font-family: var(--cjk);
+      font-size: 1.7rem;
       font-weight: 700;
-      border-radius: 4px;
-      padding: 2px 7px;
-      letter-spacing: 0.04em;
+      padding: 0;
     }
 
-    .hsk-badge.lv1 { background: var(--hsk1); color: #000; }
-    .hsk-badge.lv2 { background: var(--hsk2); color: #000; }
-    .hsk-badge.lv3 { background: var(--hsk3); color: #000; }
-    .hsk-badge.lv4 { background: var(--hsk4); color: #fff; }
-    .hsk-badge.lv5 { background: var(--hsk5); color: #fff; }
-    .hsk-badge.lv6 { background: var(--hsk6); color: #fff; }
-    .hsk-badge.lv0 { background: var(--hsk0); color: #fff; }
+    .vr-word:hover { color: var(--accent2); }
+    .vr-pinyin { color: var(--accent2); }
+    .vr-freq { color: var(--text-muted); font-size: 0.78rem; margin-left: auto; }
 
-    .word-freq {
-      font-size: 0.75rem;
-      color: var(--text-muted);
+    .vr-def { font-size: 0.92rem; margin: 4px 0 8px; }
+    .vr-def.muted { color: var(--text-muted); }
+
+    .vr-sents { list-style: none; }
+
+    .vr-sents .sent-link { color: var(--text-muted); font-size: 0.9rem; }
+
+    .vocab-row:not(.expanded) .vr-sents li:nth-child(n+3) { display: none; }
+
+    .more-btn {
+      background: none;
+      border: none;
+      color: var(--accent2);
+      cursor: pointer;
+      font-size: 0.8rem;
+      padding: 6px 4px 0;
     }
 
-    /* Context drawer */
-    .word-contexts {
-      border-top: 1px solid var(--border);
-      background: var(--surface2);
-      padding: 0 14px;
-      max-height: 0;
-      overflow: hidden;
-      transition: max-height 300ms ease, padding 200ms ease;
-    }
-
-    .word-contexts.open {
-      max-height: 400px;
-      padding: 10px 14px;
-    }
-
-    .context-sentence {
-      font-size: 0.82rem;
-      color: var(--text-muted);
-      padding: 5px 0;
-      border-bottom: 1px solid var(--border);
-      line-height: 1.5;
-    }
-
-    .context-sentence:last-child { border-bottom: none; }
-
-    /* ------------------------------------------------------------------ Empty state */
-    #empty-state {
-      text-align: center;
-      padding: 60px 24px;
-      color: var(--text-muted);
-    }
-
-    #empty-state .big-icon {
-      font-size: 3rem;
-      margin-bottom: 12px;
-    }
-
+    /* ---- Empty state */
+    #empty-state { text-align: center; padding: 60px 24px; color: var(--text-muted); }
+    #empty-state .big-icon { font-size: 3rem; margin-bottom: 12px; }
     #empty-state h2 { color: var(--text); margin-bottom: 8px; }
 
     /* ------------------------------------------------------------------ Responsive */
+    @media (max-width: 960px) {
+      .reader { grid-template-columns: 1fr; }
+
+      /* The word panel becomes a bottom sheet */
+      .word-panel {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        top: auto;
+        max-height: 58vh;
+        border-radius: 14px 14px 0 0;
+        box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.5);
+        transform: translateY(105%);
+        transition: transform 200ms ease;
+        z-index: 40;
+      }
+
+      .word-panel.open { transform: none; }
+      .wp-close { display: block; }
+      .vocab-list { grid-template-columns: 1fr; }
+    }
+
     @media (max-width: 720px) {
       .layout { grid-template-columns: 1fr; }
       #sidebar { display: none; }
+
+      /* Small screens: let the whole page scroll instead of an inner pane */
+      body { height: auto; overflow: visible; }
+      #main, #results-section { overflow: visible; }
+      #toolbar { top: 56px; }
     }
 
     @media (max-width: 540px) {
-      .form-row { flex-direction: column; }
+      .form-row { flex-direction: column; align-items: stretch; }
       #analyze-btn { width: 100%; }
+      #results-section { padding: 0 14px 32px; }
     }
   </style>
 </head>
@@ -587,33 +769,6 @@
           </select>
         </div>
 
-        <div class="form-group hsk-group">
-          <label>HSK Levels</label>
-          <div class="hsk-checkboxes">
-            <label class="hsk-check" data-level="1">
-              <input type="checkbox" name="hsk" value="1" checked />HSK 1
-            </label>
-            <label class="hsk-check" data-level="2">
-              <input type="checkbox" name="hsk" value="2" checked />HSK 2
-            </label>
-            <label class="hsk-check" data-level="3">
-              <input type="checkbox" name="hsk" value="3" checked />HSK 3
-            </label>
-            <label class="hsk-check" data-level="4">
-              <input type="checkbox" name="hsk" value="4" checked />HSK 4
-            </label>
-            <label class="hsk-check" data-level="5">
-              <input type="checkbox" name="hsk" value="5" checked />HSK 5
-            </label>
-            <label class="hsk-check" data-level="6">
-              <input type="checkbox" name="hsk" value="6" checked />HSK 6
-            </label>
-            <label class="hsk-check" data-level="0">
-              <input type="checkbox" name="hsk" value="0" checked />Unknown
-            </label>
-          </div>
-        </div>
-
         <button id="analyze-btn">Analyze</button>
       </div>
     </section>
@@ -630,22 +785,58 @@
     </section>
 
     <!-- Results -->
-    <section id="results-section">
+    <section id="results-section" class="visible">
       <!-- Empty state (shown before first analysis) -->
       <div id="empty-state">
         <div class="big-icon">🎙️</div>
         <h2>Ready to analyze</h2>
-        <p>Enter a podcast or YouTube URL above and click Analyze.</p>
+        <p>Enter a podcast or YouTube URL above and click Analyze,<br>or pick an episode from the history.</p>
       </div>
 
-      <!-- Populated after analysis -->
-      <div id="results-content" style="display:none">
-        <div id="summary-bar">
-          <span id="summary-text"></span>
-          <button id="export-btn">Export CSV</button>
+      <!-- Populated once an episode is loaded -->
+      <div id="results-content" hidden>
+        <div id="episode-head">
+          <h2 id="episode-title"></h2>
+          <a id="episode-link" href="#" target="_blank" rel="noopener noreferrer">open source ↗</a>
         </div>
-        <div id="filter-tabs"></div>
-        <div id="word-sections"></div>
+
+        <div id="toolbar">
+          <div class="main-tabs" role="tablist">
+            <button class="main-tab active" role="tab" data-tab="transcript" aria-selected="true">Transcript</button>
+            <button class="main-tab" role="tab" data-tab="vocab" aria-selected="false">Vocabulary <span class="count" id="vocab-count">0</span></button>
+          </div>
+          <div class="level-filter">
+            <span class="filter-label">HSK levels</span>
+            <div class="hsk-checkboxes" id="level-chips"></div>
+          </div>
+        </div>
+
+        <!-- Transcript tab -->
+        <div id="panel-transcript">
+          <div class="panel-bar">
+            <span id="transcript-hint">Click any word for its definition and every sentence it appears in. Highlighted words match the selected HSK levels.</span>
+            <span class="spacer">
+              <a class="btn-link" id="dl-txt" href="#">Transcript .txt</a>
+              <a class="btn-link" id="dl-vtt" href="#">Subtitles .vtt</a>
+            </span>
+          </div>
+          <div class="reader">
+            <div id="transcript"></div>
+            <aside class="word-panel" id="word-panel" aria-live="polite"></aside>
+          </div>
+        </div>
+
+        <!-- Vocabulary tab -->
+        <div id="panel-vocab" hidden>
+          <div class="panel-bar">
+            <span id="vocab-summary"></span>
+            <span class="spacer">
+              <a class="btn-link" id="dl-csv" href="#">Export CSV</a>
+              <a class="btn-link primary" id="dl-anki" href="#" title="Download an .apkg deck, then import it in Anki (File → Import)">Export to Anki (.apkg)</a>
+            </span>
+          </div>
+          <div id="word-sections"></div>
+        </div>
       </div>
     </section>
 
@@ -658,287 +849,24 @@
 // -----------------------------------------------------------------------
 // State
 // -----------------------------------------------------------------------
-let currentEpisodeId = null;
-let currentWords = [];   // full unfiltered word list from last result
-let activeTab = 'all';
+const LEVEL_ORDER = [1, 2, 3, 4, 5, 6, 0];       // 0 (unknown) last
+const DEFAULT_LEVELS = [4, 5, 6];                // the words a learner usually still needs to study
+const state = {
+  episodeId: null,
+  segments: [],
+  lexicon: {},
+  words: [],
+  occurrences: new Map(),   // word -> [segment index, ...]
+  segmentByText: new Map(), // sentence text -> segment index
+  levels: loadLevels(),     // Set of HSK levels currently shown / highlighted
+  tab: 'transcript',
+  selected: null,
+};
 
 // -----------------------------------------------------------------------
 // Utility
 // -----------------------------------------------------------------------
 const $ = id => document.getElementById(id);
-
-function hskLabel(level) {
-  return level === 0 ? 'Unknown' : `HSK ${level}`;
-}
-
-function hskColor(level) {
-  const map = { 1:'hsk1', 2:'hsk2', 3:'hsk3', 4:'hsk4', 5:'hsk5', 6:'hsk6', 0:'hsk0' };
-  return map[level] ?? 'hsk0';
-}
-
-function formatDate(iso) {
-  const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
-}
-
-function selectedHskLevels() {
-  return [...document.querySelectorAll('input[name="hsk"]:checked')]
-    .map(cb => cb.value)
-    .join(',');
-}
-
-// -----------------------------------------------------------------------
-// Episode sidebar
-// -----------------------------------------------------------------------
-async function loadEpisodes() {
-  try {
-    const res = await fetch('/episodes');
-    const episodes = await res.json();
-    const list = $('episode-list');
-    const empty = $('sidebar-empty');
-
-    if (episodes.length === 0) {
-      empty.style.display = 'block';
-      return;
-    }
-
-    empty.style.display = 'none';
-    // Clear existing episode items (keep the empty placeholder)
-    [...list.querySelectorAll('.ep-item')].forEach(el => el.remove());
-
-    episodes.forEach(ep => {
-      const li = document.createElement('li');
-      li.className = 'ep-item';
-      const btn = document.createElement('button');
-      btn.dataset.id = ep.id;
-      btn.innerHTML = `
-        <span class="ep-title">${escapeHtml(ep.title)}</span>
-        <span class="ep-date">${formatDate(ep.created_at)}</span>
-      `;
-      btn.addEventListener('click', () => loadEpisodeResults(ep.id, btn));
-      li.appendChild(btn);
-      list.appendChild(li);
-    });
-  } catch (err) {
-    console.error('Failed to load episodes:', err);
-  }
-}
-
-async function loadEpisodeResults(episodeId, btn) {
-  // Mark active
-  document.querySelectorAll('#episode-list button').forEach(b => b.classList.remove('active'));
-  if (btn) btn.classList.add('active');
-
-  currentEpisodeId = episodeId;
-  const hsk = selectedHskLevels() || 'all';
-  const url = `/episodes/${episodeId}/words?hsk_levels=${encodeURIComponent(hsk)}`;
-  const res = await fetch(url);
-  const words = await res.json();
-  currentWords = words;
-  renderResults(words, episodeId);
-}
-
-// -----------------------------------------------------------------------
-// Progress stages
-// -----------------------------------------------------------------------
-const STAGES = ['downloading', 'transcribing', 'extracting', 'done'];
-
-function resetStages() {
-  STAGES.forEach(s => {
-    const el = $(`stage-${s}`);
-    if (el) { el.className = 'stage-item'; }
-  });
-}
-
-function setStage(stageName) {
-  const idx = STAGES.indexOf(stageName);
-  STAGES.forEach((s, i) => {
-    const el = $(`stage-${s}`);
-    if (!el) return;
-    if (i < idx) el.className = 'stage-item done';
-    else if (i === idx) el.className = 'stage-item active';
-    else el.className = 'stage-item';
-  });
-}
-
-function setStatus(msg, hasSpinner = true) {
-  $('status-msg').innerHTML = (hasSpinner ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
-}
-
-// -----------------------------------------------------------------------
-// Analyze via SSE
-// -----------------------------------------------------------------------
-function doAnalyze() {
-  const url = $('url-input').value.trim();
-  if (!url) { $('url-input').focus(); return; }
-
-  const model = $('model-select').value;
-  const hsk = selectedHskLevels() || 'all';
-
-  // Show progress, hide results content
-  $('analyze-btn').disabled = true;
-  $('progress-section').classList.add('visible');
-  $('results-section').classList.add('visible');
-  $('empty-state').style.display = 'none';
-  $('results-content').style.display = 'none';
-  resetStages();
-  setStatus('Connecting…');
-
-  const params = new URLSearchParams({ url, model, hsk_levels: hsk });
-  const evtSrc = new EventSource(`/analyze/stream?${params}`);
-
-  evtSrc.onmessage = e => {
-    const data = JSON.parse(e.data);
-    const { stage, message, result } = data;
-
-    if (stage === 'error') {
-      setStatus(`Error: ${message}`, false);
-      STAGES.forEach(s => { const el = $(`stage-${s}`); if (el) el.classList.remove('active'); });
-      $('stage-done').className = 'stage-item error';
-      $('analyze-btn').disabled = false;
-      evtSrc.close();
-      return;
-    }
-
-    setStage(stage);
-    setStatus(message, stage !== 'done');
-
-    if (stage === 'done' && result) {
-      evtSrc.close();
-      currentEpisodeId = result.episode_id;
-      currentWords = result.words;
-      renderResults(result.words, result.episode_id);
-      $('analyze-btn').disabled = false;
-      loadEpisodes();  // refresh sidebar
-    }
-  };
-
-  evtSrc.onerror = () => {
-    setStatus('Connection error.', false);
-    $('analyze-btn').disabled = false;
-    evtSrc.close();
-  };
-}
-
-// -----------------------------------------------------------------------
-// Render results
-// -----------------------------------------------------------------------
-function renderResults(words, episodeId) {
-  $('progress-section').classList.remove('visible');
-  $('results-content').style.display = 'block';
-
-  const levelSet = [...new Set(words.map(w => w.hsk_level))].sort((a, b) => {
-    if (a === 0) return 1;
-    if (b === 0) return -1;
-    return a - b;
-  });
-
-  // Summary
-  const totalWords = words.length;
-  const levelCount = levelSet.length;
-  $('summary-text').textContent = `${totalWords} word${totalWords !== 1 ? 's' : ''} found across ${levelCount} HSK level${levelCount !== 1 ? 's' : ''}`;
-
-  // Export button
-  $('export-btn').onclick = () => {
-    const hsk = selectedHskLevels() || 'all';
-    window.location.href = `/episodes/${episodeId}/export.csv?hsk_levels=${encodeURIComponent(hsk)}`;
-  };
-
-  // Filter tabs
-  activeTab = 'all';
-  buildFilterTabs(words, levelSet);
-
-  // Word sections
-  renderWordSections(words, levelSet, null);
-}
-
-function buildFilterTabs(words, levelSet) {
-  const tabs = $('filter-tabs');
-  tabs.innerHTML = '';
-
-  const makeTab = (label, value) => {
-    const btn = document.createElement('button');
-    btn.className = 'tab-btn' + (value === 'all' ? ' active' : '');
-    btn.textContent = label;
-    btn.dataset.tab = value;
-    btn.addEventListener('click', () => {
-      activeTab = value;
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-
-      const filtered = value === 'all' ? words : words.filter(w => w.hsk_level === parseInt(value, 10));
-      const sections = value === 'all' ? levelSet : [parseInt(value, 10)];
-      renderWordSections(filtered, sections, value === 'all' ? null : parseInt(value, 10));
-    });
-    return btn;
-  };
-
-  tabs.appendChild(makeTab(`All (${words.length})`, 'all'));
-  levelSet.forEach(lv => {
-    const count = words.filter(w => w.hsk_level === lv).length;
-    tabs.appendChild(makeTab(`${hskLabel(lv)} (${count})`, String(lv)));
-  });
-}
-
-function renderWordSections(words, levelSet, singleLevel) {
-  const container = $('word-sections');
-  container.innerHTML = '';
-
-  const sections = singleLevel !== null ? [singleLevel] : levelSet;
-
-  sections.forEach(lv => {
-    const group = words.filter(w => w.hsk_level === lv);
-    if (!group.length) return;
-
-    const sec = document.createElement('div');
-    sec.className = 'hsk-section';
-
-    const colorVar = `var(--${hskColor(lv)})`;
-    sec.innerHTML = `
-      <div class="hsk-section-header">
-        <h3 style="color:${colorVar}">${hskLabel(lv)}</h3>
-        <span class="hsk-section-count">${group.length} word${group.length !== 1 ? 's' : ''}</span>
-      </div>
-      <div class="word-grid"></div>
-    `;
-
-    const grid = sec.querySelector('.word-grid');
-    group.forEach(w => grid.appendChild(makeWordCard(w)));
-
-    container.appendChild(sec);
-  });
-}
-
-function makeWordCard(w) {
-  const card = document.createElement('div');
-  card.className = 'word-card';
-
-  const lv = w.hsk_level;
-  const badgeClass = `hsk-badge lv${lv}`;
-
-  card.innerHTML = `
-    <div class="word-card-top">
-      <span class="word-char">${escapeHtml(w.word)}</span>
-      <span class="word-pinyin">${escapeHtml(w.pinyin)}</span>
-      ${w.definition ? `<span class="word-definition">${escapeHtml(w.definition)}</span>` : ''}
-    </div>
-    <div class="word-meta">
-      <span class="${badgeClass}">${hskLabel(lv)}</span>
-      <span class="word-freq">×${w.frequency}</span>
-    </div>
-    <div class="word-contexts">
-      ${w.contexts.map(c => `<div class="context-sentence">${escapeHtml(c)}</div>`).join('')}
-    </div>
-  `;
-
-  // Toggle context on click
-  card.addEventListener('click', () => {
-    const ctx = card.querySelector('.word-contexts');
-    ctx.classList.toggle('open');
-  });
-
-  return card;
-}
 
 function escapeHtml(str) {
   return String(str)
@@ -949,16 +877,428 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+function hskLabel(level) {
+  return level === 0 ? 'Not on HSK list' : `HSK ${level}`;
+}
+
+function formatDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatTime(seconds) {
+  const s = Math.floor(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${String(m).padStart(2, '0')}:${sec}`;
+}
+
+/** Escape *text* and wrap each occurrence of *word* in <mark>. */
+function highlight(text, word) {
+  return escapeHtml(text).split(escapeHtml(word)).join(`<mark>${escapeHtml(word)}</mark>`);
+}
+
+function loadLevels() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('pc.levels'));
+    if (Array.isArray(saved) && saved.every(n => LEVEL_ORDER.includes(n))) return new Set(saved);
+  } catch (_) { /* storage unavailable or corrupt: use defaults */ }
+  return new Set(DEFAULT_LEVELS);
+}
+
+function saveLevels() {
+  try { localStorage.setItem('pc.levels', JSON.stringify([...state.levels])); } catch (_) { /* ignore */ }
+}
+
+function levelsParam() {
+  return LEVEL_ORDER.filter(l => state.levels.has(l)).join(',');
+}
+
+// -----------------------------------------------------------------------
+// Episode sidebar
+// -----------------------------------------------------------------------
+async function loadEpisodes() {
+  try {
+    const res = await fetch('/episodes');
+    const episodes = await res.json();
+    const list = $('episode-list');
+    [...list.querySelectorAll('.ep-item')].forEach(el => el.remove());
+    $('sidebar-empty').style.display = episodes.length ? 'none' : 'block';
+
+    episodes.forEach(ep => {
+      const li = document.createElement('li');
+      li.className = 'ep-item';
+      const btn = document.createElement('button');
+      btn.dataset.id = ep.id;
+      btn.innerHTML = `
+        <span class="ep-title">${escapeHtml(ep.title)}</span>
+        <span class="ep-date">${formatDate(ep.created_at)}</span>
+      `;
+      if (ep.id === state.episodeId) btn.classList.add('active');
+      btn.addEventListener('click', () => loadEpisode(ep.id));
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+  } catch (err) {
+    console.error('Failed to load episodes:', err);
+  }
+}
+
+function markActiveEpisode() {
+  document.querySelectorAll('#episode-list button').forEach(b =>
+    b.classList.toggle('active', Number(b.dataset.id) === state.episodeId));
+}
+
+// -----------------------------------------------------------------------
+// Load an episode (transcript + vocabulary)
+// -----------------------------------------------------------------------
+async function loadEpisode(episodeId) {
+  const [tRes, wRes] = await Promise.all([
+    fetch(`/episodes/${episodeId}/transcript`),
+    fetch(`/episodes/${episodeId}/words`),
+  ]);
+  if (!tRes.ok || !wRes.ok) {
+    setStatus('Could not load that episode.', false);
+    return;
+  }
+  const transcript = await tRes.json();
+
+  state.episodeId = episodeId;
+  state.segments = transcript.segments;
+  state.lexicon = transcript.lexicon;
+  state.words = await wRes.json();
+  state.selected = null;
+
+  // Index: which segments contain each word / have each text
+  state.occurrences = new Map();
+  state.segmentByText = new Map();
+  state.segments.forEach((seg, i) => {
+    if (!state.segmentByText.has(seg.text)) state.segmentByText.set(seg.text, i);
+    new Set(seg.tokens).forEach(t => {
+      if (!state.lexicon[t]) return;
+      if (!state.occurrences.has(t)) state.occurrences.set(t, []);
+      state.occurrences.get(t).push(i);
+    });
+  });
+
+  $('progress-section').classList.remove('visible');
+  $('empty-state').hidden = true;
+  $('results-content').hidden = false;
+  $('episode-title').textContent = transcript.episode.title;
+  const link = $('episode-link');
+  link.href = /^https?:\/\//.test(transcript.episode.url) ? transcript.episode.url : '#';
+  link.hidden = link.getAttribute('href') === '#';
+
+  $('dl-txt').href = `/episodes/${episodeId}/transcript.txt`;
+  $('dl-vtt').href = `/episodes/${episodeId}/transcript.vtt`;
+
+  renderTranscript();
+  renderWordPanel();
+  applyLevels();
+  markActiveEpisode();
+  $('results-section').scrollTop = 0;
+}
+
+// -----------------------------------------------------------------------
+// Tabs and level filter
+// -----------------------------------------------------------------------
+function setTab(tab) {
+  state.tab = tab;
+  document.querySelectorAll('.main-tab').forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  $('panel-transcript').hidden = tab !== 'transcript';
+  $('panel-vocab').hidden = tab !== 'vocab';
+  if (tab !== 'transcript') closePanelSheet();
+}
+
+function buildLevelChips() {
+  $('level-chips').innerHTML = LEVEL_ORDER.map(l => `
+    <label class="hsk-check" data-level="${l}">
+      <input type="checkbox" value="${l}" ${state.levels.has(l) ? 'checked' : ''} />${l === 0 ? 'Non-HSK' : 'HSK ' + l}
+    </label>`).join('');
+  $('level-chips').addEventListener('change', e => {
+    const level = Number(e.target.value);
+    e.target.checked ? state.levels.add(level) : state.levels.delete(level);
+    saveLevels();
+    applyLevels();
+  });
+}
+
+/** Re-apply the selected levels everywhere they matter. */
+function applyLevels() {
+  // Transcript highlighting is pure CSS: one class per selected level.
+  $('transcript').className = [...state.levels].map(l => `show-${l}`).join(' ');
+
+  const shown = state.words.filter(w => state.levels.has(w.hsk_level));
+  $('vocab-count').textContent = shown.length;
+  $('vocab-summary').textContent = shown.length
+    ? `${shown.length} word${shown.length !== 1 ? 's' : ''} at the selected levels`
+    : 'No words at the selected levels — pick a level above.';
+
+  const params = `?hsk_levels=${encodeURIComponent(levelsParam())}`;
+  const none = shown.length === 0;
+  for (const [id, path] of [['dl-csv', 'export.csv'], ['dl-anki', 'anki.apkg']]) {
+    const a = $(id);
+    a.href = none ? '#' : `/episodes/${state.episodeId}/${path}${params}`;
+    a.setAttribute('aria-disabled', String(none));
+  }
+  renderVocab(shown);
+}
+
+// -----------------------------------------------------------------------
+// Transcript reader
+// -----------------------------------------------------------------------
+function renderTranscript() {
+  const el = $('transcript');
+  if (!state.segments.length) {
+    el.innerHTML = `<div class="notice">No transcript is stored for this episode (it was analysed before
+      transcripts were saved, or no speech was found). Analyze its URL again to generate one.</div>`;
+    return;
+  }
+  el.innerHTML = state.segments.map((seg, i) => {
+    const text = seg.tokens.map(t => {
+      const entry = state.lexicon[t];
+      if (!entry) return escapeHtml(t);
+      return `<span class="tok lv${entry.hsk_level}" data-w="${escapeHtml(t)}">${escapeHtml(t)}</span>`;
+    }).join('');
+    return `<div class="seg" id="seg-${i}"><span class="ts">${formatTime(seg.start)}</span><p class="seg-text">${text}</p></div>`;
+  }).join('');
+}
+
+function selectWord(word) {
+  state.selected = word;
+  document.querySelectorAll('#transcript .tok.sel').forEach(el => el.classList.remove('sel'));
+  document.querySelectorAll('#transcript .tok').forEach(el => {
+    if (el.dataset.w === word) el.classList.add('sel');
+  });
+  renderWordPanel();
+  $('word-panel').classList.add('open');   // bottom sheet on narrow screens
+}
+
+function closePanelSheet() {
+  $('word-panel').classList.remove('open');
+}
+
+function renderWordPanel() {
+  const panel = $('word-panel');
+  const word = state.selected;
+  const entry = word && state.lexicon[word];
+  if (!entry) {
+    panel.innerHTML = `<div class="wp-hint">Click a word in the transcript to see its definition and example sentences.</div>`;
+    return;
+  }
+
+  let meaning;
+  if (entry.definition) {
+    meaning = `<p class="wp-def">${escapeHtml(entry.definition)}</p>`;
+  } else if (entry.parts && entry.parts.length) {
+    meaning = `<p class="wp-def muted">No dictionary entry for this word. Character by character:</p>
+      <ul class="wp-parts">${entry.parts.map(p => `
+        <li><span class="cjk">${escapeHtml(p.char)}</span><span class="pin">${escapeHtml(p.pinyin)}</span>${escapeHtml(p.definition || '—')}</li>`).join('')}
+      </ul>`;
+  } else {
+    meaning = `<p class="wp-def muted">No dictionary entry.</p>`;
+  }
+
+  const occ = state.occurrences.get(word) || [];
+  const shownOcc = occ.slice(0, 40);
+  const sentences = shownOcc.map(i => `
+    <li><button class="sent-link" data-seg="${i}">
+      <span class="ts">${formatTime(state.segments[i].start)}</span>
+      <span>${state.segments[i].tokens.map(t => t === word ? `<mark>${escapeHtml(t)}</mark>` : escapeHtml(t)).join('')}</span>
+    </button></li>`).join('');
+
+  panel.innerHTML = `
+    <button class="wp-close" aria-label="Close">✕</button>
+    <div class="wp-word">${escapeHtml(word)}</div>
+    <div class="wp-row">
+      <span class="wp-pinyin">${escapeHtml(entry.pinyin)}</span>
+      <span class="hsk-badge lv${entry.hsk_level}">${hskLabel(entry.hsk_level)}</span>
+      ${'speechSynthesis' in window ? '<button class="speak" title="Listen">🔊</button>' : ''}
+    </div>
+    ${meaning}
+    <div class="wp-panel-title">In this episode · ${occ.length}×</div>
+    <ul class="sent-list">${sentences}</ul>
+    ${occ.length > shownOcc.length ? `<div class="wp-hint">+ ${occ.length - shownOcc.length} more</div>` : ''}`;
+}
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'zh-CN';
+  utter.rate = 0.8;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(utter);
+}
+
+function goToSegment(index) {
+  setTab('transcript');
+  const el = $(`seg-${index}`);
+  if (!el) return;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 1400);
+}
+
+// -----------------------------------------------------------------------
+// Vocabulary tab
+// -----------------------------------------------------------------------
+function renderVocab(words) {
+  const container = $('word-sections');
+  if (!words.length) { container.innerHTML = ''; return; }
+
+  container.innerHTML = LEVEL_ORDER.map(level => {
+    const group = words.filter(w => w.hsk_level === level);
+    if (!group.length) return '';
+    return `
+      <div class="hsk-section">
+        <div class="hsk-section-header">
+          <h3 style="color:var(--hsk${level})">${hskLabel(level)}</h3>
+          <span class="hsk-section-count">${group.length} word${group.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="vocab-list">${group.map(vocabRow).join('')}</div>
+      </div>`;
+  }).join('');
+}
+
+function vocabRow(w) {
+  const sentences = w.contexts.map(c => {
+    const seg = state.segmentByText.get(c);
+    return `<li><button class="sent-link" ${seg === undefined ? 'disabled' : `data-seg="${seg}"`}>
+      <span>${highlight(c, w.word)}</span></button></li>`;
+  }).join('');
+  const more = w.contexts.length > 2
+    ? `<button class="more-btn" data-more>Show all ${w.contexts.length} sentences</button>` : '';
+  return `
+    <article class="vocab-row">
+      <div class="vr-head">
+        <button class="vr-word" data-word="${escapeHtml(w.word)}" title="Show in transcript">${escapeHtml(w.word)}</button>
+        <span class="vr-pinyin">${escapeHtml(w.pinyin)}</span>
+        <span class="hsk-badge lv${w.hsk_level}">${hskLabel(w.hsk_level)}</span>
+        <span class="vr-freq">×${w.frequency}</span>
+      </div>
+      <div class="vr-def ${w.definition ? '' : 'muted'}">${w.definition ? escapeHtml(w.definition) : 'No dictionary entry'}</div>
+      <ul class="vr-sents">${sentences}</ul>
+      ${more}
+    </article>`;
+}
+
+// -----------------------------------------------------------------------
+// Progress / analyze via SSE
+// -----------------------------------------------------------------------
+const STAGES = ['downloading', 'transcribing', 'extracting', 'done'];
+
+function resetStages() {
+  STAGES.forEach(s => { $(`stage-${s}`).className = 'stage-item'; });
+}
+
+function setStage(stageName) {
+  const idx = STAGES.indexOf(stageName);
+  STAGES.forEach((s, i) => {
+    $(`stage-${s}`).className = 'stage-item' + (i < idx ? ' done' : i === idx ? ' active' : '');
+  });
+}
+
+function setStatus(msg, hasSpinner = true) {
+  $('status-msg').innerHTML = (hasSpinner ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
+}
+
+function doAnalyze() {
+  const url = $('url-input').value.trim();
+  if (!url) { $('url-input').focus(); return; }
+
+  $('analyze-btn').disabled = true;
+  $('progress-section').classList.add('visible');
+  resetStages();
+  setStatus('Connecting…');
+
+  const params = new URLSearchParams({ url, model: $('model-select').value });
+  const evtSrc = new EventSource(`/analyze/stream?${params}`);
+  const finish = () => { $('analyze-btn').disabled = false; evtSrc.close(); };
+
+  evtSrc.onmessage = async e => {
+    const { stage, message, result } = JSON.parse(e.data);
+
+    if (stage === 'error') {
+      setStatus(`Error: ${message}`, false);
+      STAGES.forEach(s => $(`stage-${s}`).classList.remove('active'));
+      $('stage-done').className = 'stage-item error';
+      finish();
+      return;
+    }
+
+    setStage(stage);
+    setStatus(message, stage !== 'done');
+
+    if (stage === 'done' && result) {
+      finish();
+      await loadEpisode(result.episode_id);
+      setTab('transcript');
+      loadEpisodes();   // refresh the history list
+    }
+  };
+
+  evtSrc.onerror = () => {
+    setStatus('Connection error.', false);
+    finish();
+  };
+}
+
 // -----------------------------------------------------------------------
 // Event wiring
 // -----------------------------------------------------------------------
 $('analyze-btn').addEventListener('click', doAnalyze);
+$('url-input').addEventListener('keydown', e => { if (e.key === 'Enter') doAnalyze(); });
 
-$('url-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doAnalyze();
+document.querySelector('.main-tabs').addEventListener('click', e => {
+  const btn = e.target.closest('.main-tab');
+  if (btn) setTab(btn.dataset.tab);
 });
 
+$('transcript').addEventListener('click', e => {
+  const tok = e.target.closest('.tok');
+  if (tok) selectWord(tok.dataset.w);
+});
+
+$('word-panel').addEventListener('click', e => {
+  if (e.target.closest('.wp-close')) return closePanelSheet();
+  if (e.target.closest('.speak')) return speak(state.selected);
+  const sent = e.target.closest('.sent-link[data-seg]');
+  if (sent) goToSegment(Number(sent.dataset.seg));
+});
+
+$('word-sections').addEventListener('click', e => {
+  const sent = e.target.closest('.sent-link[data-seg]');
+  if (sent) return goToSegment(Number(sent.dataset.seg));
+
+  if (e.target.closest('[data-more]')) {
+    const row = e.target.closest('.vocab-row');
+    row.classList.add('expanded');
+    return e.target.closest('[data-more]').remove();
+  }
+
+  const wordBtn = e.target.closest('.vr-word');
+  if (wordBtn) {
+    const word = wordBtn.dataset.word;
+    const first = (state.occurrences.get(word) || [])[0];
+    setTab('transcript');
+    selectWord(word);
+    if (first !== undefined) goToSegment(first);
+  }
+});
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePanelSheet(); });
+
+for (const id of ['dl-csv', 'dl-anki']) {
+  $(id).addEventListener('click', e => { if ($(id).getAttribute('aria-disabled') === 'true') e.preventDefault(); });
+}
+
 // Initial load
+buildLevelChips();
 loadEpisodes();
 </script>
 </body>
