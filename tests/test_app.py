@@ -419,3 +419,18 @@ def test_old_episodes_with_a_transcript_are_re_segmented_when_opened(client, mon
     words = {w["word"]: w for w in client.get(f"/episodes/{eid}/words").json()}
     assert words["詞彙"]["hsk_level"] == 6 and words["學習"]["hsk_level"] == 1
     assert words["詞彙"]["contexts"] == ["我們學習詞彙。"]
+
+
+def test_episodes_stored_with_the_bare_character_levels_are_corrected_when_opened(client, monkeypatch):
+    monkeypatch.setattr(app_module, "transcribe", lambda *a, **k: [Segment(0, 3, "我们拉入这个问题")])
+    eid = analyze(client)
+    con = sqlite3.connect(app_module.DB_PATH)
+    con.execute("UPDATE words SET hsk_level = 6 WHERE word = '入'")  # what the previous list produced
+    con.execute("UPDATE episodes SET dict_version = 2")
+    con.commit()
+    con.close()
+
+    words = {w["word"]: w for w in client.get(f"/episodes/{eid}/words", params={"hsk_levels": "4,5,6"}).json()}
+    assert "入" not in words  # no longer a card under the HSK 4-6 filter
+    lexicon = client.get(f"/episodes/{eid}/transcript").json()["lexicon"]
+    assert lexicon["入"]["hsk_level"] == 0

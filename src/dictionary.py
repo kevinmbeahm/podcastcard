@@ -23,7 +23,7 @@ from typing import NamedTuple
 
 from pypinyin import Style, lazy_pinyin
 
-DICT_VERSION = 2
+DICT_VERSION = 3  # 3: bare HSK 3.0 characters above level 3 are no longer levelled
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
 _CEDICT_FILE = _DATA_DIR / "cedict_ts.u8.gz"

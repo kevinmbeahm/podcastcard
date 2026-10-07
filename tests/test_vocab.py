@@ -47,3 +47,23 @@ def test_extract_words_sorts_known_levels_first_unknown_last():
     known = [lv for lv in levels if lv]
     assert known == sorted(known)
     assert levels[-1] == 0
+
+
+def test_bare_characters_are_not_hsk_words_just_because_a_compound_is():
+    """入 was showing up as an "HSK 6 word"; only whole entries of the lists count."""
+    assert get_hsk_level("入") == 0  # HSK 3.0 says 6, the 2025 revision says 4: not a reliable level
+    for compound, level in (("进入", 2), ("入口", 4), ("入学", 6), ("融入", 6)):
+        assert get_hsk_level(compound) == level  # the whole words keep their levels
+
+
+def test_everyday_single_character_words_still_have_levels():
+    for char in "说天手山":
+        assert get_hsk_level(char) == 1  # HSK 3.0 basics the classic list only has inside compounds
+
+
+def test_no_unreliable_bare_characters_at_levels_4_to_6():
+    from src.hsk import HSK_WORDS
+
+    # characters that only HSK 3.0 levels as stand-alone words (not in the classic HSK 2.0 lists)
+    for char in "入于作公利原同因如":
+        assert char not in HSK_WORDS, char

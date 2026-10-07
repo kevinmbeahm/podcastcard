@@ -7,6 +7,10 @@ Without an argument the dataset is downloaded from GitHub. Levels are taken
 from the classic HSK 2.0 lists (``old-1`` .. ``old-6``). Words absent from
 HSK 2.0 but present in HSK 3.0 levels 1-6 (``new-1`` .. ``new-6``) fall back to
 their 3.0 level, so basics such as 说 / 天 / 山 are not reported as unknown.
+Bare *characters* from the 3.0 fallback are only kept for levels 1-3: at levels 4-6 they are
+mostly characters that live inside compounds (入, 于, 作, 公 ...), and the standards disagree about
+their level (入 is 6 in HSK 3.0 but 4 in the 2025 revision), so they would show up as "HSK 6
+words" that are really just parts of words. HSK 2.0 single-character entries are always kept.
 Words in neither list are level 0 at lookup time and are not stored.
 """
 
@@ -22,6 +26,9 @@ SOURCE_URL = (
     "main/complete.json"
 )
 OUT_FILE = Path(__file__).parent.parent / "data" / "hsk_words.json"
+
+# HSK 3.0 single characters are only trusted as stand-alone words up to this level.
+MAX_FALLBACK_CHARACTER_LEVEL = 3
 
 # Genuine HSK 2.0 entries missing from the source dataset.
 SUPPLEMENT: dict[str, int] = {"你好": 1}
@@ -45,6 +52,8 @@ def build(entries: list[dict]) -> dict[str, int]:
             if prefix == "old":
                 hsk2[word] = min(level, hsk2.get(word, 9))
             elif prefix == "new" and level <= 6:
+                if len(word) == 1 and level > MAX_FALLBACK_CHARACTER_LEVEL:
+                    continue
                 hsk3[word] = min(level, hsk3.get(word, 9))
     return {**hsk3, **SUPPLEMENT, **hsk2}
 

@@ -40,3 +40,9 @@ def test_traditional_function_words_are_skipped_like_simplified_ones():
     traditional = {w.word for w in extract_words([Segment(0, 1, "從北京來")])}
     assert "从" not in simplified and "從" not in traditional  # 从/從 = "from"
     assert "北京" in simplified and "北京" in traditional
+
+
+def test_a_bare_character_inside_a_sentence_is_not_flagged_as_an_hsk_word():
+    # "拉入" is split into 拉 + 入 here; the bare 入 must come out as unlisted, not "HSK 6"
+    words = {w.word: w for w in extract_words([Segment(0, 3, "我们拉入这个问题")])}
+    assert words["入"].hsk_level == 0
