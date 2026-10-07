@@ -397,9 +397,11 @@
       gap: 12px 24px;
       flex-wrap: wrap;
       padding: 12px 0;
-      margin-bottom: 14px;
       border-bottom: 1px solid var(--border);
     }
+
+    /* The panels supply the gap below the sticky bars (a margin would let content show through). */
+    #panel-transcript, #panel-vocab { padding-top: 14px; }
 
     .main-tabs { display: flex; gap: 4px; }
 
@@ -554,15 +556,72 @@
       outline-offset: 1px;
     }
 
+    /* Audio player (lives in the sticky toolbar) */
+    .player {
+      position: sticky;
+      top: var(--bar-h, 60px);
+      z-index: 19;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      gap: 6px 14px;
+      flex-wrap: wrap;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .player audio { flex: 1 1 320px; min-width: 240px; height: 36px; }
+
+    .follow {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.8rem;
+      user-select: none;
+    }
+
+    .seg.playing {
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .has-audio #transcript .ts { cursor: pointer; }
+    .has-audio #transcript .ts:hover { color: var(--accent2); text-decoration: underline; }
+
+    .play-btn {
+      display: none;
+      flex: none;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      margin: 6px 6px 0 0;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      color: var(--accent2);
+      cursor: pointer;
+      font-size: 0.65rem;
+      padding: 0 0 0 2px;
+    }
+
+    .has-audio .play-btn { display: inline-flex; }
+    .play-btn:hover { border-color: var(--accent); color: #fff; background: var(--accent); }
+
+    .sent-row { display: flex; align-items: flex-start; }
+    .sent-row .sent-link { flex: 1; width: auto; min-width: 0; }
+
     /* Word panel */
     .word-panel {
       position: sticky;
-      top: 78px;
+      top: calc(var(--sticky-h, 60px) + 16px);
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 18px;
-      max-height: calc(100vh - 110px);
+      max-height: calc(100vh - var(--sticky-h, 60px) - 210px);
       overflow-y: auto;
     }
 
@@ -735,7 +794,9 @@
       /* Small screens: let the whole page scroll instead of an inner pane */
       body { height: auto; overflow: visible; }
       #main, #results-section { overflow: visible; }
-      #toolbar { top: 56px; }
+      /* Phone: only the audio player stays pinned (under the 56px page header) */
+      #toolbar { position: static; }
+      .player { top: 56px; }
     }
 
     @media (max-width: 540px) {
@@ -833,6 +894,12 @@
           </div>
         </div>
 
+        <div class="player" id="player" hidden>
+          <audio id="audio" controls preload="metadata"></audio>
+          <label class="follow"><input type="checkbox" id="follow" checked /> Follow along</label>
+          <a class="btn-link" id="dl-audio" href="#">Download audio</a>
+        </div>
+
         <!-- Transcript tab -->
         <div id="panel-transcript">
           <div class="panel-bar">
@@ -883,6 +950,10 @@ const state = {
   levels: loadLevels(),     // Set of HSK levels currently shown / highlighted
   tab: 'transcript',
   selected: null,
+  hasAudio: false,
+  playing: -1,         // index of the segment being spoken
+  stopAt: null,        // pause here (play-one-sentence mode)
+  sentenceStart: 0,
 };
 
 // -----------------------------------------------------------------------
@@ -1014,6 +1085,7 @@ async function loadEpisode(episodeId) {
 
   $('dl-txt').href = `/episodes/${episodeId}/transcript.txt`;
   $('dl-vtt').href = `/episodes/${episodeId}/transcript.vtt`;
+  setAudio(episodeId, Boolean(transcript.episode.has_audio));
 
   renderTranscript();
   renderWordPanel();
@@ -1129,10 +1201,13 @@ function renderWordPanel() {
   const occ = state.occurrences.get(word) || [];
   const shownOcc = occ.slice(0, 40);
   const sentences = shownOcc.map(i => `
-    <li><button class="sent-link" data-seg="${i}">
-      <span class="ts">${formatTime(state.segments[i].start)}</span>
-      <span>${state.segments[i].tokens.map(t => t === word ? `<mark>${escapeHtml(t)}</mark>` : escapeHtml(t)).join('')}</span>
-    </button></li>`).join('');
+    <li class="sent-row">
+      <button class="play-btn" data-play="${i}" title="Play this sentence" aria-label="Play this sentence">▶</button>
+      <button class="sent-link" data-seg="${i}">
+        <span class="ts">${formatTime(state.segments[i].start)}</span>
+        <span>${state.segments[i].tokens.map(t => t === word ? `<mark>${escapeHtml(t)}</mark>` : escapeHtml(t)).join('')}</span>
+      </button>
+    </li>`).join('');
 
   panel.innerHTML = `
     <button class="wp-close" aria-label="Close">✕</button>
@@ -1167,6 +1242,100 @@ function goToSegment(index) {
 }
 
 // -----------------------------------------------------------------------
+// Audio
+// -----------------------------------------------------------------------
+const audio = $('audio');
+const TRANSCRIPT_HINT = 'Click any word for its definition and every sentence it appears in. Highlighted words match the selected HSK levels.';
+
+function setAudio(episodeId, hasAudio) {
+  audio.pause();
+  state.hasAudio = hasAudio;
+  state.playing = -1;
+  state.stopAt = null;
+  $('player').hidden = !hasAudio;
+  document.body.classList.toggle('has-audio', hasAudio);
+  $('transcript-hint').textContent = TRANSCRIPT_HINT + (hasAudio ? ' Click a time to play from there.' : '');
+  if (hasAudio) {
+    audio.src = `/episodes/${episodeId}/audio`;
+    $('dl-audio').href = `/episodes/${episodeId}/audio?download=1`;
+  } else {
+    audio.removeAttribute('src');
+    audio.load();
+  }
+}
+
+/** Index of the segment being spoken at time *t* (-1 in a long gap, e.g. music). */
+function segmentAt(t) {
+  const segs = state.segments;
+  let lo = 0, hi = segs.length - 1, found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (segs[mid].start <= t) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return found >= 0 && t > segs[found].end + 1.5 ? -1 : found;
+}
+
+/** Seek to a transcript line and play. With *onlySentence*, stop at the end of that line. */
+function playSegment(index, onlySentence) {
+  const seg = state.segments[index];
+  if (!state.hasAudio || !seg) return;
+  state.stopAt = onlySentence ? seg.end + 0.2 : null;
+  state.sentenceStart = seg.start;
+  audio.currentTime = seg.start;
+  audio.play().catch(() => { /* the browser may block autoplay; the player's own button still works */ });
+}
+
+function followAlong(el) {
+  if (!$('follow').checked || state.tab !== 'transcript') return;
+  const rect = el.getBoundingClientRect();
+  const bars = [$('toolbar'), ...($('player').hidden ? [] : [$('player')])];
+  const visibleTop = Math.max(...bars.map(b => b.getBoundingClientRect().bottom)) + 8;
+  if (rect.top < visibleTop || rect.bottom > window.innerHeight - 8) {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+
+audio.addEventListener('timeupdate', () => {
+  const t = audio.currentTime;
+  if (state.stopAt !== null && t >= state.stopAt) {
+    audio.pause();
+    state.stopAt = null;
+  }
+  const index = segmentAt(t);
+  if (index === state.playing) return;
+  const previous = $(`seg-${state.playing}`);
+  if (previous) previous.classList.remove('playing');
+  state.playing = index;
+  const current = $(`seg-${index}`);
+  if (current) {
+    current.classList.add('playing');
+    if (!audio.paused) followAlong(current);
+  }
+});
+
+// Scrubbing the player's own seek bar cancels "play just this sentence".
+audio.addEventListener('seeking', () => {
+  if (state.stopAt !== null && Math.abs(audio.currentTime - state.sentenceStart) > 0.3) state.stopAt = null;
+});
+
+try { $('follow').checked = localStorage.getItem('pc.follow') !== '0'; } catch (_) { /* default: on */ }
+$('follow').addEventListener('change', () => {
+  try { localStorage.setItem('pc.follow', $('follow').checked ? '1' : '0'); } catch (_) { /* ignore */ }
+});
+
+// The player and the word panel stick below the toolbar; tell the CSS how tall the bars are.
+function syncBarHeights() {
+  const bar = $('toolbar').offsetHeight;
+  const player = $('player').hidden ? 0 : $('player').offsetHeight;
+  const root = document.documentElement.style;
+  root.setProperty('--bar-h', `${bar}px`);
+  root.setProperty('--sticky-h', `${bar + player}px`);
+}
+const barObserver = new ResizeObserver(syncBarHeights);
+barObserver.observe($('toolbar'));
+barObserver.observe($('player'));
+
+// -----------------------------------------------------------------------
 // Vocabulary tab
 // -----------------------------------------------------------------------
 function renderVocab(words) {
@@ -1190,7 +1359,9 @@ function renderVocab(words) {
 function vocabRow(w) {
   const sentences = w.contexts.map(c => {
     const seg = state.segmentByText.get(c);
-    return `<li><button class="sent-link" ${seg === undefined ? 'disabled' : `data-seg="${seg}"`}>
+    const play = seg === undefined ? ''
+      : `<button class="play-btn" data-play="${seg}" title="Play this sentence" aria-label="Play this sentence">▶</button>`;
+    return `<li class="sent-row">${play}<button class="sent-link" ${seg === undefined ? 'disabled' : `data-seg="${seg}"`}>
       <span>${highlight(c, w.word)}</span></button></li>`;
   }).join('');
   const more = w.contexts.length > 2
@@ -1292,6 +1463,8 @@ document.querySelector('.main-tabs').addEventListener('click', e => {
 });
 
 $('transcript').addEventListener('click', e => {
+  const stamp = e.target.closest('.ts');
+  if (stamp) return playSegment(Number(stamp.closest('.seg').id.slice(4)), false);  // "seg-12"
   const tok = e.target.closest('.tok');
   if (tok) selectWord(tok.dataset.w);
 });
@@ -1299,11 +1472,15 @@ $('transcript').addEventListener('click', e => {
 $('word-panel').addEventListener('click', e => {
   if (e.target.closest('.wp-close')) return closePanelSheet();
   if (e.target.closest('.speak')) return speak(state.selected);
+  const play = e.target.closest('.play-btn');
+  if (play) return playSegment(Number(play.dataset.play), true);
   const sent = e.target.closest('.sent-link[data-seg]');
   if (sent) goToSegment(Number(sent.dataset.seg));
 });
 
 $('word-sections').addEventListener('click', e => {
+  const play = e.target.closest('.play-btn');
+  if (play) return playSegment(Number(play.dataset.play), true);
   const sent = e.target.closest('.sent-link[data-seg]');
   if (sent) return goToSegment(Number(sent.dataset.seg));
 

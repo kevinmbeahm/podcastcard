@@ -18,6 +18,7 @@ It is meant for learners who listen to authentic audio and want to look up exact
 - Click-to-define transcript reader with HSK-level highlighting (web app)
 - Word extraction with frequency counts, pinyin, English definitions (CC-CEDICT) and HSK levels 1–6
 - Export: `words.csv`, `transcript.txt`/`.vtt`, and an Anki `.apkg` deck
+- Keeps the audio, with a player that follows the transcript and plays any sentence on demand
 - Episode history, so earlier analyses reopen instantly
 
 ## Quick Start
@@ -50,11 +51,14 @@ Paste a podcast or video URL (anything `yt-dlp` supports) and click **Analyze**.
   highlighted; click *any* word to see its pinyin, HSK level and definition, plus every sentence in
   the episode where it appears (click a sentence to jump to it). 🔊 reads the word aloud using your
   browser's Chinese voice. Download the transcript as `.txt` or `.vtt`.
+- **Audio player** (top of the page, stays pinned while you scroll) — the episode's audio is kept, so you can listen along. Click a timestamp to play from that line; the line being spoken is highlighted and the transcript follows along (switch off with *Follow along*). A ▶ button next to each example sentence plays just that sentence, in the word panel and the Vocabulary tab. *Download audio* saves the file.
 - **Vocabulary tab** — the words at the selected HSK levels, grouped by level, each with its
   definition and example sentences. Export as **CSV** or as an **Anki deck**.
 - **HSK level chips** (top right) choose which levels are highlighted, listed and exported. Your
   choice is remembered; the default is HSK 4–6.
 - **History** (left) reopens earlier episodes without re-processing.
+
+**Where things are stored:** the database (`podcastcard.db`) and the audio files (`podcastcard_audio/`) are created in the folder you start the server from. A 30-minute episode is roughly 40 MB of audio. To keep the audio somewhere else, set `PODCASTCARD_AUDIO_DIR` before starting; to free space, delete files from that folder — the episode keeps its transcript and vocabulary, it just won't have a player.
 
 ### Command line
 
@@ -72,7 +76,7 @@ Options for `run`:
 
 Output in the `--output` folder:
 
-- the downloaded audio (`.mp3`)
+- the downloaded audio (`.mp3`), kept next to the other files
 - `transcript.txt` (with `[mm:ss]` markers) and `transcript.vtt` — the full transcript
 - `words.csv` — `word`, `pinyin`, `definition`, `hsk_level`, `frequency`, `contexts` (sentences joined with ` | `)
 - `anki_deck.apkg` — with `--anki`

@@ -5,7 +5,7 @@ pypinyin
 typer[all]
 rich
 pydantic
-fastapi
+fastapi>=0.115.1
 uvicorn[standard]
 python-multipart
 genanki

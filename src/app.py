@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import logging
+import mimetypes
 import os
 import queue
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -19,7 +22,13 @@ from typing import Callable, Generator, Iterator, Optional, TypeVar
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -53,7 +62,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     url        TEXT    UNIQUE NOT NULL,
     title      TEXT    NOT NULL,
     created_at TEXT    NOT NULL,
-    lexicon    TEXT    NOT NULL DEFAULT '{}'
+    lexicon    TEXT    NOT NULL DEFAULT '{}',
+    audio_file TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS words (
@@ -83,7 +93,40 @@ CREATE INDEX IF NOT EXISTS segments_episode ON segments(episode_id, idx);
 _MIGRATIONS = [
     ("words", "definition", "TEXT NOT NULL DEFAULT ''"),
     ("episodes", "lexicon", "TEXT NOT NULL DEFAULT '{}'"),
+    ("episodes", "audio_file", "TEXT NOT NULL DEFAULT ''"),
 ]
+
+
+def _audio_dir() -> Path:
+    """Where episode audio is kept: PODCASTCARD_AUDIO_DIR, else next to the database."""
+    configured = os.environ.get("PODCASTCARD_AUDIO_DIR")
+    path = Path(configured) if configured else Path(DB_PATH).resolve().parent / "podcastcard_audio"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _store_audio(url: str, source: str) -> str:
+    """Move the downloaded audio into the audio folder; returns its file name.
+
+    The name is derived from the URL, so analysing the same URL again replaces the file.
+    """
+    name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16] + (Path(source).suffix or ".mp3")
+    dest = _audio_dir() / name
+    try:
+        os.replace(source, dest)  # same drive: instant, and replaces an older copy
+    except OSError:
+        shutil.copy2(source, dest)  # temp folder on another drive
+        os.unlink(source)
+    return name
+
+
+def _episode_audio_path(episode: sqlite3.Row) -> Path | None:
+    """The stored audio file for an episode, if there is one on disk."""
+    name = Path(episode["audio_file"] or "").name  # never trust a path from the database
+    if not name:
+        return None
+    path = _audio_dir() / name
+    return path if path.is_file() else None
 
 
 def _get_db() -> sqlite3.Connection:
@@ -190,25 +233,29 @@ def _save_episode(
     words: list[dict],
     segments: list[dict] | None = None,
     lexicon: dict | None = None,
+    audio_file: str = "",
 ) -> int:
     """Persist (or replace) an episode with its words and transcript. Returns its id."""
     con = _get_db()
     try:
         now = datetime.now(timezone.utc).isoformat()
         lexicon_json = json.dumps(lexicon or {}, ensure_ascii=False)
-        row = con.execute("SELECT id FROM episodes WHERE url = ?", (url,)).fetchone()
+        row = con.execute("SELECT id, audio_file FROM episodes WHERE url = ?", (url,)).fetchone()
         if row:
             episode_id = row["id"]
             con.execute(
-                "UPDATE episodes SET title = ?, created_at = ?, lexicon = ? WHERE id = ?",
-                (title, now, lexicon_json, episode_id),
+                "UPDATE episodes SET title = ?, created_at = ?, lexicon = ?, audio_file = ? WHERE id = ?",
+                (title, now, lexicon_json, audio_file, episode_id),
             )
+            old = Path(row["audio_file"] or "").name
+            if old and old != audio_file:  # e.g. the format changed: don't leave the old copy behind
+                (_audio_dir() / old).unlink(missing_ok=True)
             con.execute("DELETE FROM words WHERE episode_id = ?", (episode_id,))
             con.execute("DELETE FROM segments WHERE episode_id = ?", (episode_id,))
         else:
             cur = con.execute(
-                "INSERT INTO episodes (url, title, created_at, lexicon) VALUES (?, ?, ?, ?)",
-                (url, title, now, lexicon_json),
+                "INSERT INTO episodes (url, title, created_at, lexicon, audio_file) VALUES (?, ?, ?, ?, ?)",
+                (url, title, now, lexicon_json, audio_file),
             )
             episode_id = cur.lastrowid
 
@@ -328,6 +375,7 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
     log.info("Analyzing %s (model=%s)", url, model)
     yield {"stage": "downloading", "message": "Fetching audio…", "elapsed": 0}
 
+    audio_file = ""
     with tempfile.TemporaryDirectory() as tmp:
         try:
 
@@ -390,6 +438,12 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
             yield {"stage": "error", "message": f"Transcription failed: {exc}"}
             return
 
+        try:
+            audio_file = _store_audio(url, audio_path)
+        except Exception:
+            # The audio is a convenience: don't throw the analysis away if it can't be kept.
+            log.exception("Could not keep the audio for %s", url)
+
     yield {"stage": "extracting", "message": "Extracting Chinese vocabulary…", "elapsed": round(time.monotonic() - started)}
     try:
         # Every word is stored: the HSK filter is applied when viewing/exporting.
@@ -405,7 +459,7 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
             for occ in extract_words(segments)
         ]
         annotated, lexicon = annotate(segments)
-        episode_id = _save_episode(url, title, words, annotated, lexicon)
+        episode_id = _save_episode(url, title, words, annotated, lexicon, audio_file)
     except Exception as exc:
         log.exception("Extraction failed for %s", url)
         yield {"stage": "error", "message": f"Extraction failed: {exc}"}
@@ -508,7 +562,12 @@ def get_transcript(episode_id: int):
         ).fetchall()
         return JSONResponse(
             {
-                "episode": {"id": ep["id"], "url": ep["url"], "title": ep["title"]},
+                "episode": {
+                    "id": ep["id"],
+                    "url": ep["url"],
+                    "title": ep["title"],
+                    "has_audio": _episode_audio_path(ep) is not None,
+                },
                 "segments": [
                     {
                         "start": r["start"],
@@ -523,6 +582,22 @@ def get_transcript(episode_id: int):
         )
     finally:
         con.close()
+
+
+@app.get("/episodes/{episode_id}/audio")
+def get_audio(episode_id: int, download: bool = Query(default=False)):
+    """The episode's audio. Supports range requests, so the player can seek."""
+    con = _get_db()
+    try:
+        ep = _require_episode(con, episode_id)
+    finally:
+        con.close()
+    path = _episode_audio_path(ep)
+    if path is None:
+        raise HTTPException(status_code=404, detail="No audio is stored for this episode")
+    media_type = mimetypes.guess_type(path.name)[0] or "audio/mpeg"
+    headers = _download_headers(episode_id, ep["title"], path.suffix.lstrip(".") or "mp3") if download else None
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 @app.get("/episodes/{episode_id}/transcript.vtt")

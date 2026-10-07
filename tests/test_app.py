@@ -14,6 +14,14 @@ import src.app as app_module
 from src.extract import Segment
 
 URL = "https://example.com/ep1"
+AUDIO = bytes(range(256)) * 40  # 10,240 bytes of recognisable fake audio
+
+
+def fake_download(url, out, on_progress=None):
+    path = os.path.join(out, "x.mp3")
+    with open(path, "wb") as fh:
+        fh.write(AUDIO)
+    return path
 SEGMENTS = [
     Segment(0.0, 3.5, "我喜欢听中文播客，学习新的词汇。"),
     Segment(3.5, 6.0, "播客很有意思。"),
@@ -23,9 +31,7 @@ SEGMENTS = [
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "DB_PATH", str(tmp_path / "test.db"))
-    monkeypatch.setattr(
-        app_module, "download_audio", lambda url, out, on_progress=None: f"{out}/x.mp3"
-    )
+    monkeypatch.setattr(app_module, "download_audio", fake_download)
     monkeypatch.setattr(
         app_module, "transcribe", lambda path, model_size="base", **_: SEGMENTS
     )
@@ -144,7 +150,7 @@ def test_anki_export_filters_by_level(client):
 
 
 def test_unknown_episode_is_404(client):
-    for path in ("words", "transcript", "transcript.vtt", "export.csv", "anki.apkg"):
+    for path in ("words", "transcript", "audio", "transcript.vtt", "export.csv", "anki.apkg"):
         assert client.get(f"/episodes/999/{path}").status_code == 404
 
 
@@ -175,7 +181,7 @@ def test_stream_reports_download_and_transcription_progress(client, monkeypatch)
     def download(url, out, on_progress=None):
         on_progress(0.5)
         on_progress(1.0)
-        return f"{out}/x.mp3"
+        return fake_download(url, out)
 
     def transcribe(path, model_size="base", on_progress=None, **_):
         on_progress(15.0, 30.0)
@@ -220,3 +226,97 @@ def test_progress_reports_are_throttled():
     for f in (0.0, 0.02, 0.05, 0.11, 0.15, 0.25, 0.99, 1.0):
         report(f, "x")
     assert sent == [0.0, 0.11, 0.25, 0.99, 1.0]
+
+
+# ---------------------------------------------------------------- stored audio
+
+
+def test_audio_is_kept_and_served(client):
+    eid = analyze(client)
+    assert client.get(f"/episodes/{eid}/transcript").json()["episode"]["has_audio"] is True
+
+    r = client.get(f"/episodes/{eid}/audio")
+    assert r.status_code == 200
+    assert r.content == AUDIO
+    assert r.headers["content-type"] == "audio/mpeg"
+    assert r.headers["accept-ranges"] == "bytes"
+    assert "attachment" not in r.headers.get("content-disposition", "")
+
+
+def test_audio_supports_range_requests_so_the_player_can_seek(client):
+    eid = analyze(client)
+    r = client.get(f"/episodes/{eid}/audio", headers={"Range": "bytes=100-199"})
+    assert r.status_code == 206
+    assert r.content == AUDIO[100:200]
+    assert r.headers["content-range"] == f"bytes 100-199/{len(AUDIO)}"
+
+
+def test_audio_can_be_downloaded_with_the_episode_title(client):
+    eid = analyze(client)
+    r = client.get(f"/episodes/{eid}/audio", params={"download": "true"})
+    disposition = r.headers["content-disposition"]
+    assert disposition.startswith("attachment")
+    assert f'filename="episode_{eid}.mp3"' in disposition
+    assert "filename*=UTF-8''%E6%B5%8B%E8%AF%95" in disposition  # the Chinese title
+
+
+def test_audio_lives_in_a_folder_next_to_the_database(client, tmp_path):
+    analyze(client)
+    files = list((tmp_path / "podcastcard_audio").iterdir())
+    assert len(files) == 1 and files[0].read_bytes() == AUDIO
+
+
+def test_reanalysing_replaces_the_audio_instead_of_piling_up_copies(client, monkeypatch, tmp_path):
+    eid = analyze(client)
+
+    def newer(url, out, on_progress=None):
+        path = os.path.join(out, "again.mp3")
+        with open(path, "wb") as fh:
+            fh.write(b"NEWER-AUDIO")
+        return path
+
+    monkeypatch.setattr(app_module, "download_audio", newer)
+    assert analyze(client) == eid
+    assert client.get(f"/episodes/{eid}/audio").content == b"NEWER-AUDIO"
+    assert len(list((tmp_path / "podcastcard_audio").iterdir())) == 1
+
+
+def test_analysis_still_succeeds_if_the_audio_cannot_be_kept(client, monkeypatch):
+    def broken(url, source):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app_module, "_store_audio", broken)
+    eid = analyze(client)
+    assert client.get(f"/episodes/{eid}/transcript").json()["episode"]["has_audio"] is False
+    assert client.get(f"/episodes/{eid}/audio").status_code == 404
+    assert client.get(f"/episodes/{eid}/words").json()  # the vocabulary is all there
+
+
+def test_audio_deleted_from_disk_is_reported_as_missing(client, tmp_path):
+    eid = analyze(client)
+    for f in (tmp_path / "podcastcard_audio").iterdir():
+        f.unlink()
+    assert client.get(f"/episodes/{eid}/transcript").json()["episode"]["has_audio"] is False
+    assert client.get(f"/episodes/{eid}/audio").status_code == 404
+
+
+def test_episodes_from_before_audio_was_kept_have_none(client):
+    # reuses the old-schema database built in the migration test
+    con = sqlite3.connect(app_module.DB_PATH)
+    con.executescript(
+        """CREATE TABLE episodes(id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE NOT NULL,
+             title TEXT NOT NULL, created_at TEXT NOT NULL);
+           INSERT INTO episodes VALUES (1, 'old', 'Old', '2026-01-01');"""
+    )
+    con.commit()
+    con.close()
+    assert client.get("/episodes/1/transcript").json()["episode"]["has_audio"] is False
+    assert client.get("/episodes/1/audio").status_code == 404
+
+
+def test_the_audio_folder_can_be_configured(client, monkeypatch, tmp_path):
+    elsewhere = tmp_path / "my-audio"
+    monkeypatch.setenv("PODCASTCARD_AUDIO_DIR", str(elsewhere))
+    eid = analyze(client)
+    assert [f.read_bytes() for f in elsewhere.iterdir()] == [AUDIO]
+    assert client.get(f"/episodes/{eid}/audio").content == AUDIO

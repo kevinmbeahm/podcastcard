@@ -16,7 +16,8 @@ There are two ways to use it:
 - **Web UI** (`python -m src serve`, i.e. uvicorn on `src.app:app`) — single-page app with live progress, a **Transcript** tab
   (full transcript; click any word for its definition and every sentence it appears in), a
   **Vocabulary** tab (words at the selected HSK levels with definitions and sentences, CSV and
-  Anki export), and episode history.
+  Anki export), a pinned **audio player** (the audio is kept per episode; click a timestamp or a ▶
+  to play, current line highlighted, optional follow-along), and episode history.
 
 ## Tech stack
 
@@ -99,6 +100,7 @@ HSK level ascending, with unknown (level 0) words last.
 - `GET /episodes` — list past episodes
 - `GET /episodes/{id}/words?hsk_levels=4,5,6` — stored words (with definitions/contexts), optional level filter
 - `GET /episodes/{id}/transcript` — `{episode, segments:[{start,end,text,tokens}], lexicon:{token:{pinyin,hsk_level,definition[,parts]}}}`
+- `GET /episodes/{id}/audio[?download=true]` — the stored audio (range requests, so seeking works; 404 if none). `transcript` JSON has `episode.has_audio`
 - `GET /episodes/{id}/transcript.vtt` / `transcript.txt` — transcript downloads
 - `GET /episodes/{id}/export.csv?hsk_levels=` / `anki.apkg?hsk_levels=` — vocabulary downloads
   (Anki returns 404 if no words match the levels)
@@ -108,13 +110,18 @@ Each transcription runs in its own child process (`transcribe_isolated`); closin
 stream sets `report.cancelled`, which terminates the child. `src/__main__.py` keeps its
 `if __name__ == "__main__"` guard because spawned children may re-import the main module.
 
-SQLite schema: `episodes(id, url UNIQUE, title, created_at, lexicon)`,
+SQLite schema: `episodes(id, url UNIQUE, title, created_at, lexicon, audio_file)`,
 `words(id, episode_id, word, pinyin, definition, hsk_level, frequency, contexts)` where `contexts`
 is a JSON array stored as text, and `segments(id, episode_id, idx, start, end, text, tokens)`
 (`tokens` = JSON array). `lexicon` is a JSON object. Tokenisation and the lexicon are computed once
 at analysis time and stored. `_get_db()` runs `_MIGRATIONS` to add columns missing from older DBs;
 episodes analysed before transcripts existed simply have no segments (the UI says so).
 Re-analysing a URL updates its episode row in place.
+Audio: after transcription the downloaded file is moved to `<audio dir>/<sha1(url)[:16]><ext>`
+(`_store_audio`; audio dir = `$PODCASTCARD_AUDIO_DIR` or `podcastcard_audio/` next to the DB) and its
+name is stored in `episodes.audio_file`; re-analysing the URL replaces it. Failing to keep the
+audio never fails the analysis. `has_audio` is true only if the file still exists on disk.
+`requirements.txt` needs `fastapi>=0.115.1` (Starlette ≥0.39 is what adds Range support to `FileResponse`).
 
 `hsk_levels` convention everywhere: comma-separated ints (e.g. `"4,5,6"`) or `"all"`.
 
@@ -140,6 +147,11 @@ python -m src serve                    # http://localhost:8000 (add --reload whe
   The HSK level chips are a *view* filter (stored in `localStorage` as `pc.levels`, default 4–6):
   they control transcript highlighting (CSS classes `show-N` on `#transcript`), the Vocabulary
   list, and the `hsk_levels` param of the CSV/Anki links. Analysis itself always stores every word.
+  Audio UI: `<body>` gets class `has-audio` (CSS shows the ▶ buttons and clickable timestamps);
+  `playSegment(i, onlySentence)` seeks and plays (with `stopAt` for single-sentence mode);
+  `timeupdate` drives the `.playing` highlight and follow-along (`pc.follow` in localStorage).
+  The toolbar and the player are two stacked sticky bars on desktop (heights in `--bar-h` /
+  `--sticky-h`, kept current by a ResizeObserver); on phones only the player stays pinned.
 - Commit author must be `Claude <noreply@anthropic.com>` or pushes show as Unverified.
 - `.claude/` is gitignored.
 
@@ -148,8 +160,8 @@ python -m src serve                    # http://localhost:8000 (add --reload whe
 - **Phase 1 (done):** core pipeline + CLI.
 - **Phase 2 (done):** FastAPI web server + single-page UI + SQLite history.
 - **Phase 3 (partly done):** definitions ✔, full HSK lists ✔, transcript + click-to-define reader ✔,
-  Anki `.apkg` export ✔. Still open: per-word audio clips on cards, `config.yaml`, batch
-  processing, context-aware definitions, HSK-standard option, play/seek audio in the reader.
+  Anki `.apkg` export ✔. audio player in the reader ✔. Still open: per-word audio clips on Anki cards, `config.yaml`,
+  batch processing, context-aware definitions, HSK-standard option, deleting episodes/audio.
 
 ## Known gaps / things to be aware of
 
@@ -158,6 +170,8 @@ python -m src serve                    # http://localhost:8000 (add --reload whe
 - HSK levels mix standards: HSK 2.0 where available, HSK 3.0 (levels 1–6) otherwise. HSK 3.0's
   7–9 band is not represented (those words are level 0). A `--standard` option would be a
   natural extension.
+- Audio is never deleted automatically (~40 MB per 30 min episode at the default 192 kbps); there
+  is no "delete episode" yet.
 - Automated tests stub the download/Whisper steps. The browser reader was checked with
   Playwright against seeded data (that script is not in the repo).
 - Tokens that aren't whole entries in the HSK lists (e.g. 一个, 一下, 几种) count as "Non-HSK"
