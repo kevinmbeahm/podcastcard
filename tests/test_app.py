@@ -27,7 +27,7 @@ def client(tmp_path, monkeypatch):
         app_module, "download_audio", lambda url, out, on_progress=None: f"{out}/x.mp3"
     )
     monkeypatch.setattr(
-        app_module, "transcribe", lambda path, model_size="base", on_progress=None, on_status=None: SEGMENTS
+        app_module, "transcribe", lambda path, model_size="base", **_: SEGMENTS
     )
     monkeypatch.setattr(app_module, "loading_message", lambda model: f"Loading {model}")
     monkeypatch.setattr(app_module, "_fetch_video_title", lambda url: "测试 Episode: one")
@@ -177,7 +177,7 @@ def test_stream_reports_download_and_transcription_progress(client, monkeypatch)
         on_progress(1.0)
         return f"{out}/x.mp3"
 
-    def transcribe(path, model_size="base", on_progress=None, on_status=None):
+    def transcribe(path, model_size="base", on_progress=None, **_):
         on_progress(15.0, 30.0)
         on_progress(30.0, 30.0)
         return SEGMENTS
@@ -200,7 +200,7 @@ def test_stream_reports_download_and_transcription_progress(client, monkeypatch)
 def test_slow_steps_send_heartbeats_so_the_page_can_show_elapsed_time(client, monkeypatch):
     import time
 
-    def slow_transcribe(path, model_size="base", on_progress=None, on_status=None):
+    def slow_transcribe(path, model_size="base", **_):
         time.sleep(0.4)  # e.g. a model download that reports nothing
         return SEGMENTS
 

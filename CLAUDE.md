@@ -49,7 +49,7 @@ URL → audio.download_audio() → transcribe.transcribe() ─┬→ extract.ext
 | File | Responsibility |
 |------|----------------|
 | `src/audio.py` | `download_audio(url, output_dir, on_progress=None) -> str` (path to mp3) via yt-dlp; `on_progress(fraction)`; checks FFmpeg first; 30 s socket timeout |
-| `src/transcribe.py` | `transcribe(audio_path, model_size="base", device="auto", on_progress=None) -> list[Segment]` via faster-whisper; `on_progress(seconds_done, total_seconds)`, `on_status(text, fraction)` for model download/load/decode steps; `auto` falls back to CPU (int8) if CUDA libs are missing; `model_is_cached()` requires `model.bin`+`config.json`+`tokenizer.json` (an interrupted download doesn't count); a cached model loads with `local_files_only=True`; a missing one shows download progress measured from the HF cache folder |
+| `src/transcribe.py` | `transcribe(audio_path, model_size="base", device="auto", on_progress=None) -> list[Segment]` via faster-whisper; `on_progress(seconds_done, total_seconds)`, `on_status(text, fraction)` for model download/load/decode steps; `auto` falls back to CPU (int8) if CUDA libs are missing; `model_is_cached()` requires `model.bin`+`config.json`+`tokenizer.json` (an interrupted download doesn't count); a cached model loads with `local_files_only=True`; a missing one shows download progress measured from the HF cache folder; `transcribe_isolated(...)` runs the same thing in a fresh `spawn`ed child process (progress/status relayed over a queue, `should_cancel`, crash detection) — **the web app uses this** so no native Whisper state survives between jobs; the CLI calls `transcribe` directly |
 | `src/extract.py` | `extract_words(segments) -> list[WordOccurrence]`; jieba tokenize + dedup + filter; defines `Segment` and `WordOccurrence` dataclasses |
 | `src/dictionary.py` | `get_definition(word) -> str` — English gloss from CC-CEDICT (lazy-loaded; skips variant/abbr/surname stubs; prefers the reading matching pypinyin) |
 | `src/hsk.py` | `get_hsk_level(word) -> int` (0 = unknown), `get_pinyin(word) -> str`, `HSK_WORDS` dict |
@@ -60,7 +60,7 @@ URL → audio.download_audio() → transcribe.transcribe() ─┬→ extract.ext
 | `src/__main__.py` | Entry point so `python -m src` runs the CLI |
 | `static/index.html` | Single-page UI (vanilla HTML/CSS/JS, no build step, no frameworks) |
 | `data/hsk_words.json` | `{word: hsk_level}` mapping (regenerate with `scripts/build_hsk_words.py`; don't hand-edit) |
-| `tests/` | pytest (`pip install -r requirements-dev.txt && pytest`): `test_vocab` (HSK/definitions/extraction), `test_transcript_anki`, `test_app` (API with stubbed pipeline + temp DB), `test_cli`, `test_transcribe` (CUDA fallback) |
+| `tests/` | pytest (`pip install -r requirements-dev.txt && pytest`): `test_vocab` (HSK/definitions/extraction), `test_transcript_anki`, `test_app` (API with stubbed pipeline + temp DB), `test_cli`, `test_transcribe` (CUDA fallback, model cache/download), `test_isolated` (real child processes; targets in `tests/_isolation_targets.py`) |
 
 ## Key data shapes
 
@@ -104,6 +104,9 @@ HSK level ascending, with unknown (level 0) words last.
   (Anki returns 404 if no words match the levels)
 
 Routes are plain `def` (not `async`) because the pipeline blocks; FastAPI runs them in a thread pool.
+Each transcription runs in its own child process (`transcribe_isolated`); closing the SSE
+stream sets `report.cancelled`, which terminates the child. `src/__main__.py` keeps its
+`if __name__ == "__main__"` guard because spawned children may re-import the main module.
 
 SQLite schema: `episodes(id, url UNIQUE, title, created_at, lexicon)`,
 `words(id, episode_id, word, pinyin, definition, hsk_level, frequency, contexts)` where `contexts`

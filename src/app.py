@@ -29,7 +29,8 @@ sys.path.insert(0, str(ROOT))
 from src.anki import write_apkg
 from src.audio import download_audio
 from src.extract import Segment, extract_words
-from src.transcribe import loading_message, transcribe
+from src.transcribe import loading_message
+from src.transcribe import transcribe_isolated as transcribe
 from src.transcript import annotate, format_text, format_vtt
 
 # uvicorn's logger, so progress and errors show up in the terminal running the server
@@ -260,9 +261,12 @@ def _run_with_progress(
     work's result, or re-raises its exception.
     """
     updates: queue.Queue = queue.Queue()
+    cancelled = threading.Event()  # set when the client goes away, so work can stop
 
     def report(fraction: Optional[float] = None, text: Optional[str] = None) -> None:
         updates.put(("progress", fraction, text))
+
+    report.cancelled = cancelled  # type: ignore[attr-defined]
 
     def target() -> None:
         try:
@@ -281,20 +285,25 @@ def _run_with_progress(
     threading.Thread(target=target, daemon=True).start()
 
     fraction: Optional[float] = None
-    yield event(None)  # announce the stage straight away, don't wait for the first heartbeat
-    while True:
-        try:
-            kind, value, text = updates.get(timeout=HEARTBEAT_SECONDS)
-        except queue.Empty:
-            kind = "heartbeat"
-        if kind == "done":
-            return value
-        if kind == "error":
-            raise value
-        if kind == "progress":
-            fraction = value  # None means "unknown": show the animated bar again
-            message = text or message
-        yield event(fraction)
+    try:
+        yield event(None)  # announce the stage straight away, don't wait for the first heartbeat
+        while True:
+            try:
+                kind, value, text = updates.get(timeout=HEARTBEAT_SECONDS)
+            except queue.Empty:
+                kind = "heartbeat"
+            if kind == "done":
+                return value
+            if kind == "error":
+                raise value
+            if kind == "progress":
+                fraction = value  # None means "unknown": show the animated bar again
+                message = text or message
+            yield event(fraction)
+    finally:
+        # Also runs if the generator is closed early (client disconnected): tell the
+        # worker to stop instead of letting it keep burning CPU.
+        cancelled.set()
 
 
 def _throttled(report: Callable[..., None], step: float = 0.01) -> Callable[[float, str], None]:
@@ -370,6 +379,7 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
                     model_size=model,
                     on_progress=on_transcribe,
                     on_status=on_status,
+                    should_cancel=report.cancelled.is_set,
                 )
 
             segments = yield from _run_with_progress(

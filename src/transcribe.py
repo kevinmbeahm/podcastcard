@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
+import queue
 import threading
 from pathlib import Path
 from typing import Callable
@@ -202,3 +204,86 @@ def transcribe(
             )
             return _run(audio_path, model_size, "cpu", on_progress, on_status)
         raise RuntimeError(f"{exc}\n{_CUDA_HINT}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Running each transcription in its own process
+# ---------------------------------------------------------------------------
+# A long-lived server that runs Whisper in-process keeps native state alive between
+# jobs (CTranslate2/OpenMP thread pools, GPU memory). A fresh process per job starts
+# clean every time, frees all memory when it exits, can be cancelled by killing it,
+# and a native crash or hang can't take the web server down with it.
+
+
+class TranscriptionCancelled(RuntimeError):
+    """The caller no longer wants the result (e.g. the browser tab was closed)."""
+
+
+def _subprocess_main(messages, audio_path: str, model_size: str, device: str) -> None:
+    """Entry point of the child process: transcribe and send everything back as messages."""
+    try:
+        segments = transcribe(
+            audio_path,
+            model_size,
+            device,
+            on_progress=lambda done, total: messages.put(("progress", done, total)),
+            on_status=lambda text, fraction=None: messages.put(("status", text, fraction)),
+        )
+        messages.put(("result", [(s.start, s.end, s.text) for s in segments]))
+    except BaseException as exc:  # reported to the parent, which re-raises
+        messages.put(("error", f"{type(exc).__name__}: {exc}"))
+
+
+def transcribe_isolated(
+    audio_path: str,
+    model_size: str = "base",
+    device: str = "auto",
+    on_progress: ProgressCallback | None = None,
+    on_status: StatusCallback | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    poll_seconds: float = 0.5,
+    _target: Callable = _subprocess_main,  # replaceable in tests
+) -> list[Segment]:
+    """Like :func:`transcribe`, but runs in a fresh child process.
+
+    Progress and status callbacks are relayed from the child. If *should_cancel*
+    returns True the child is terminated and :class:`TranscriptionCancelled` is raised.
+    Raises RuntimeError if the child fails or dies without a result.
+    """
+    ctx = multiprocessing.get_context("spawn")  # a clean interpreter, same on every OS
+    messages = ctx.Queue()
+    process = ctx.Process(
+        target=_target, args=(messages, audio_path, model_size, device), daemon=True
+    )
+    process.start()
+    try:
+        while True:
+            if should_cancel and should_cancel():
+                raise TranscriptionCancelled("Transcription was cancelled.")
+            try:
+                message = messages.get(timeout=poll_seconds)
+            except queue.Empty:
+                if process.is_alive():
+                    continue
+                try:  # it may have sent its result just before exiting
+                    message = messages.get(timeout=2.0)
+                except queue.Empty:
+                    raise RuntimeError(
+                        "The transcription process stopped unexpectedly "
+                        f"(exit code {process.exitcode}). Check the server terminal for details."
+                    ) from None
+
+            kind = message[0]
+            if kind == "progress" and on_progress:
+                on_progress(message[1], message[2])
+            elif kind == "status" and on_status:
+                on_status(message[1], message[2])
+            elif kind == "result":
+                return [Segment(start, end, text) for start, end, text in message[1]]
+            elif kind == "error":
+                raise RuntimeError(message[1])
+    finally:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=5)
+        messages.close()
