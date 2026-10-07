@@ -36,11 +36,13 @@ from pydantic import BaseModel
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from src.anki import write_apkg
+from src.dictionary import DICT_VERSION, get_definition, lookup
 from src.audio import download_audio
 from src.extract import Segment, extract_words
+from src.hsk import get_hsk_level, get_pinyin
 from src.transcribe import loading_message
 from src.transcribe import transcribe_isolated as transcribe
-from src.transcript import annotate, format_text, format_vtt
+from src.transcript import annotate, format_text, format_vtt, lexicon_entry
 
 # uvicorn's logger, so progress and errors show up in the terminal running the server
 log = logging.getLogger("uvicorn.error")
@@ -63,7 +65,8 @@ CREATE TABLE IF NOT EXISTS episodes (
     title      TEXT    NOT NULL,
     created_at TEXT    NOT NULL,
     lexicon    TEXT    NOT NULL DEFAULT '{}',
-    audio_file TEXT    NOT NULL DEFAULT ''
+    audio_file TEXT    NOT NULL DEFAULT '',
+    dict_version INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS words (
@@ -94,6 +97,7 @@ _MIGRATIONS = [
     ("words", "definition", "TEXT NOT NULL DEFAULT ''"),
     ("episodes", "lexicon", "TEXT NOT NULL DEFAULT '{}'"),
     ("episodes", "audio_file", "TEXT NOT NULL DEFAULT ''"),
+    ("episodes", "dict_version", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -179,10 +183,96 @@ def _words_to_dicts(rows) -> list[dict]:
     ]
 
 
+def _word_rows(segments: list[Segment]) -> list[dict]:
+    """The vocabulary of a transcript as plain dicts (every word is kept; levels filter later)."""
+    return [
+        {
+            "word": occ.word,
+            "pinyin": occ.pinyin,
+            "definition": occ.definition,
+            "hsk_level": occ.hsk_level,
+            "frequency": len(occ.contexts),
+            "contexts": occ.contexts,
+        }
+        for occ in extract_words(segments)
+    ]
+
+
+def _replace_analysis(
+    con: sqlite3.Connection,
+    episode_id: int,
+    words: list[dict],
+    segments: list[dict],
+    lexicon: dict,
+) -> None:
+    """Replace an episode's words, transcript and lexicon with a fresh analysis."""
+    con.execute("DELETE FROM words WHERE episode_id = ?", (episode_id,))
+    con.execute("DELETE FROM segments WHERE episode_id = ?", (episode_id,))
+    con.executemany(
+        "INSERT INTO words (episode_id, word, pinyin, definition, hsk_level, frequency, contexts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                episode_id,
+                w["word"],
+                w["pinyin"],
+                w["definition"],
+                w["hsk_level"],
+                w["frequency"],
+                json.dumps(w["contexts"], ensure_ascii=False),
+            )
+            for w in words
+        ],
+    )
+    con.executemany(
+        "INSERT INTO segments (episode_id, idx, start, end, text, tokens) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (episode_id, i, s["start"], s["end"], s["text"], json.dumps(s["tokens"], ensure_ascii=False))
+            for i, s in enumerate(segments)
+        ],
+    )
+    con.execute(
+        "UPDATE episodes SET lexicon = ?, dict_version = ? WHERE id = ?",
+        (json.dumps(lexicon, ensure_ascii=False), DICT_VERSION, episode_id),
+    )
+
+
+def _refresh_definitions(con: sqlite3.Connection, episode: sqlite3.Row) -> None:
+    """Bring an episode up to date with the current dictionary and word segmentation.
+
+    The stored transcript is all it needs (no audio, no transcription), so improvements to the
+    dictionary or the segmenter reach episodes analysed long ago the next time they are opened.
+    Episodes saved before transcripts were kept only have their word list, which is re-derived
+    word by word.
+    """
+    rows = con.execute(
+        "SELECT start, end, text FROM segments WHERE episode_id = ? ORDER BY idx", (episode["id"],)
+    ).fetchall()
+    if rows:
+        segments = [Segment(r["start"], r["end"], r["text"]) for r in rows]
+        annotated, lexicon = annotate(segments)
+        _replace_analysis(con, episode["id"], _word_rows(segments), annotated, lexicon)
+    else:
+        words = con.execute("SELECT id, word FROM words WHERE episode_id = ?", (episode["id"],)).fetchall()
+        con.executemany(
+            "UPDATE words SET pinyin = ?, definition = ?, hsk_level = ? WHERE id = ?",
+            [(get_pinyin(w["word"]), get_definition(w["word"]), get_hsk_level(w["word"]), w["id"]) for w in words],
+        )
+        lexicon = {token: lexicon_entry(token) for token in json.loads(episode["lexicon"])}
+        con.execute(
+            "UPDATE episodes SET lexicon = ?, dict_version = ? WHERE id = ?",
+            (json.dumps(lexicon, ensure_ascii=False), DICT_VERSION, episode["id"]),
+        )
+    con.commit()
+
+
 def _require_episode(con: sqlite3.Connection, episode_id: int) -> sqlite3.Row:
     ep = con.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,)).fetchone()
     if ep is None:
         raise HTTPException(status_code=404, detail="Episode not found")
+    if ep["dict_version"] < DICT_VERSION:
+        _refresh_definitions(con, ep)
+        ep = con.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,)).fetchone()
     return ep
 
 
@@ -239,49 +329,23 @@ def _save_episode(
     con = _get_db()
     try:
         now = datetime.now(timezone.utc).isoformat()
-        lexicon_json = json.dumps(lexicon or {}, ensure_ascii=False)
         row = con.execute("SELECT id, audio_file FROM episodes WHERE url = ?", (url,)).fetchone()
         if row:
             episode_id = row["id"]
             con.execute(
-                "UPDATE episodes SET title = ?, created_at = ?, lexicon = ?, audio_file = ? WHERE id = ?",
-                (title, now, lexicon_json, audio_file, episode_id),
+                "UPDATE episodes SET title = ?, created_at = ?, audio_file = ? WHERE id = ?",
+                (title, now, audio_file, episode_id),
             )
             old = Path(row["audio_file"] or "").name
             if old and old != audio_file:  # e.g. the format changed: don't leave the old copy behind
                 (_audio_dir() / old).unlink(missing_ok=True)
-            con.execute("DELETE FROM words WHERE episode_id = ?", (episode_id,))
-            con.execute("DELETE FROM segments WHERE episode_id = ?", (episode_id,))
         else:
             cur = con.execute(
-                "INSERT INTO episodes (url, title, created_at, lexicon, audio_file) VALUES (?, ?, ?, ?, ?)",
-                (url, title, now, lexicon_json, audio_file),
+                "INSERT INTO episodes (url, title, created_at, audio_file) VALUES (?, ?, ?, ?)",
+                (url, title, now, audio_file),
             )
             episode_id = cur.lastrowid
-
-        con.executemany(
-            "INSERT INTO words (episode_id, word, pinyin, definition, hsk_level, frequency, contexts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [
-                (
-                    episode_id,
-                    w["word"],
-                    w["pinyin"],
-                    w["definition"],
-                    w["hsk_level"],
-                    w["frequency"],
-                    json.dumps(w["contexts"], ensure_ascii=False),
-                )
-                for w in words
-            ],
-        )
-        con.executemany(
-            "INSERT INTO segments (episode_id, idx, start, end, text, tokens) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                (episode_id, i, s["start"], s["end"], s["text"], json.dumps(s["tokens"], ensure_ascii=False))
-                for i, s in enumerate(segments or [])
-            ],
-        )
+        _replace_analysis(con, episode_id, words, segments or [], lexicon or {})
         con.commit()
         return episode_id
     finally:
@@ -447,17 +511,7 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
     yield {"stage": "extracting", "message": "Extracting Chinese vocabulary…", "elapsed": round(time.monotonic() - started)}
     try:
         # Every word is stored: the HSK filter is applied when viewing/exporting.
-        words = [
-            {
-                "word": occ.word,
-                "pinyin": occ.pinyin,
-                "definition": occ.definition,
-                "hsk_level": occ.hsk_level,
-                "frequency": len(occ.contexts),
-                "contexts": occ.contexts,
-            }
-            for occ in extract_words(segments)
-        ]
+        words = _word_rows(segments)
         annotated, lexicon = annotate(segments)
         episode_id = _save_episode(url, title, words, annotated, lexicon, audio_file)
     except Exception as exc:
@@ -524,6 +578,13 @@ def analyze_stream(url: str = Query(...), model: str = Query(default="base")):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/lookup")
+def lookup_word(word: str = Query(..., min_length=1, max_length=40)):
+    """The full dictionary entry for a word or character (Simplified or Traditional):
+    every reading with all its meanings, the parts of a phrase, and each character."""
+    return JSONResponse(lookup(word))
 
 
 @app.get("/episodes")

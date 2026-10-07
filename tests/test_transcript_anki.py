@@ -6,7 +6,7 @@ import zipfile
 
 from src.anki import write_apkg
 from src.extract import Segment
-from src.transcript import _entry, annotate, format_text, format_vtt, has_cjk, tokenize
+from src.transcript import annotate, lexicon_entry, format_text, format_vtt, has_cjk, tokenize
 
 SEGS = [
     Segment(0.0, 3.5, "我喜欢听中文播客，学习新的词汇。"),
@@ -33,12 +33,10 @@ def test_annotate_builds_lexicon_for_every_chinese_token():
     }
 
 
-def test_unknown_compound_gets_per_character_parts():
-    entry = _entry("鱼琵汤琶")  # not a real word, so no CEDICT entry
-    assert entry["definition"] == ""
-    assert [p["char"] for p in entry["parts"]] == list("鱼琵汤琶")
-    assert entry["parts"][0]["definition"]  # characters still have glosses
-    assert "parts" not in _entry("播客")  # known words don't
+def test_unknown_phrase_gets_a_literal_word_by_word_gloss():
+    entry = lexicon_entry("打篮球")  # not a dictionary entry, but made of two words
+    assert entry["definition"] == "literally: 打 (to hit) + 篮球 (basketball)"
+    assert set(entry) == {"pinyin", "hsk_level", "definition"}
 
 
 def test_vtt_and_text_formats():
@@ -89,3 +87,10 @@ def test_note_guid_is_stable_per_word(tmp_path):
     write_apkg(WORDS, a / "x.apkg", "Deck A")
     write_apkg(WORDS, b / "x.apkg", "Deck B")
     assert [n[2] for n in _notes(a / "x.apkg")] == [n[2] for n in _notes(b / "x.apkg")]
+
+
+def test_rare_characters_count_as_chinese_too():
+    assert has_cjk("㐀")  # Extension A: previously not clickable in the reader
+    assert has_cjk("𠀀")  # Extension B
+    assert has_cjk("學")
+    assert not has_cjk("abc，。 123")

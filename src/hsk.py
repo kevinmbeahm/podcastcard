@@ -7,6 +7,8 @@ from pathlib import Path
 
 from pypinyin import lazy_pinyin, Style
 
+from .dictionary import normalize
+
 # Locate data file relative to this file's package root (src/../data/)
 _DATA_FILE = Path(__file__).parent.parent / "data" / "hsk_words.json"
 
@@ -20,8 +22,8 @@ HSK_WORDS: dict[str, int] = _load_hsk_words()
 
 
 def get_hsk_level(word: str) -> int:
-    """Return HSK level (1-6) for *word*, or 0 if not in the HSK word list."""
-    return HSK_WORDS.get(word, 0)
+    """Return HSK level (1-6) for *word* (Simplified or Traditional), or 0 if not in the list."""
+    return HSK_WORDS.get(word) or HSK_WORDS.get(normalize(word), 0)
 
 
 def get_pinyin(word: str) -> str:

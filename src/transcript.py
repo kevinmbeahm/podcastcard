@@ -5,13 +5,13 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-import jieba
-
 from .dictionary import get_definition
 from .extract import Segment
 from .hsk import get_hsk_level, get_pinyin
+from .segment import tokenize  # noqa: F401  (re-exported)
 
-_CJK_RE = re.compile(r"[一-鿿]")
+# Basic ideographs, Extension A (rare characters), compatibility forms, Extensions B-G
+_CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿\U00020000-\U0003134f]")
 
 
 def has_cjk(token: str) -> bool:
@@ -19,25 +19,13 @@ def has_cjk(token: str) -> bool:
     return bool(_CJK_RE.search(token))
 
 
-def tokenize(text: str) -> list[str]:
-    """Split *text* into words. The tokens always join back to *text* exactly."""
-    return jieba.lcut(text, cut_all=False)
-
-
-def _entry(word: str) -> dict:
-    entry = {
-        "pinyin": get_pinyin(word),
-        "hsk_level": get_hsk_level(word),
-        "definition": get_definition(word),
+def lexicon_entry(token: str) -> dict:
+    """What the reader shows for a word without asking the dictionary again."""
+    return {
+        "pinyin": get_pinyin(token),
+        "hsk_level": get_hsk_level(token),
+        "definition": get_definition(token),
     }
-    if not entry["definition"] and len(word) > 1:
-        # Unknown compound (names, slang): fall back to a per-character breakdown.
-        entry["parts"] = [
-            {"char": ch, "pinyin": get_pinyin(ch), "definition": get_definition(ch)}
-            for ch in word
-            if has_cjk(ch)
-        ]
-    return entry
 
 
 def annotate(segments: Iterable[Segment]) -> tuple[list[dict], dict[str, dict]]:
@@ -45,7 +33,7 @@ def annotate(segments: Iterable[Segment]) -> tuple[list[dict], dict[str, dict]]:
 
     Returns ``(segments, lexicon)`` where each segment is
     ``{start, end, text, tokens}`` and the lexicon maps a token to
-    ``{pinyin, hsk_level, definition[, parts]}``. Unlike vocabulary extraction,
+    ``{pinyin, hsk_level, definition}``. Unlike vocabulary extraction,
     nothing is filtered out, so every word in the transcript can be looked up.
     """
     out: list[dict] = []
@@ -54,7 +42,7 @@ def annotate(segments: Iterable[Segment]) -> tuple[list[dict], dict[str, dict]]:
         tokens = tokenize(seg.text)
         for token in tokens:
             if has_cjk(token) and token not in lexicon:
-                lexicon[token] = _entry(token)
+                lexicon[token] = lexicon_entry(token)
         out.append({"start": seg.start, "end": seg.end, "text": seg.text, "tokens": tokens})
     return out, lexicon
 

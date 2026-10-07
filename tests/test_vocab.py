@@ -28,7 +28,7 @@ def test_definition_prefers_real_sense_over_stubs():
     assert get_definition("新").startswith("new")  # not "abbr. for Xinjiang"
     assert "vocabulary" in get_definition("词汇")  # not "variant of ..."
     assert get_definition("播客") == "podcast (loanword)"
-    assert get_definition("不存在的词语") == ""
+    assert get_definition("xyzzy") == ""  # nothing to look up
 
 
 def test_extract_words_filters_noise_and_keeps_context():

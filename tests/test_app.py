@@ -320,3 +320,102 @@ def test_the_audio_folder_can_be_configured(client, monkeypatch, tmp_path):
     eid = analyze(client)
     assert [f.read_bytes() for f in elsewhere.iterdir()] == [AUDIO]
     assert client.get(f"/episodes/{eid}/audio").content == AUDIO
+
+
+# ---------------------------------------------------------------- dictionary
+
+
+def test_lookup_returns_the_full_entry(client):
+    r = client.get("/lookup", params={"word": "行"})
+    assert r.status_code == 200
+    entry = r.json()
+    assert {x["pinyin"] for x in entry["readings"]} >= {"xíng", "háng"}
+
+    traditional = client.get("/lookup", params={"word": "詞彙"}).json()
+    assert traditional["simplified"] == "词汇" and traditional["definition"].startswith("vocabulary")
+
+
+def test_lookup_validates_its_input(client):
+    assert client.get("/lookup").status_code == 422
+    assert client.get("/lookup", params={"word": ""}).status_code == 422
+    assert client.get("/lookup", params={"word": "字" * 41}).status_code == 422
+    assert client.get("/lookup", params={"word": "xyzzy"}).json()["readings"] == []
+
+
+def _stale_episode():
+    """An episode saved under an older dictionary: Traditional words nothing could look up."""
+    con = sqlite3.connect(app_module.DB_PATH)
+    con.executescript(
+        """CREATE TABLE episodes(id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE NOT NULL,
+             title TEXT NOT NULL, created_at TEXT NOT NULL, lexicon TEXT NOT NULL DEFAULT '{}');
+           CREATE TABLE words(id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id INTEGER NOT NULL,
+             word TEXT NOT NULL, pinyin TEXT NOT NULL, definition TEXT NOT NULL DEFAULT '',
+             hsk_level INTEGER NOT NULL, frequency INTEGER NOT NULL DEFAULT 1,
+             contexts TEXT NOT NULL DEFAULT '[]');
+           CREATE TABLE segments(id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id INTEGER NOT NULL,
+             idx INTEGER NOT NULL, start REAL NOT NULL, end REAL NOT NULL, text TEXT NOT NULL,
+             tokens TEXT NOT NULL DEFAULT '[]');
+           INSERT INTO episodes (id, url, title, created_at, lexicon)
+             VALUES (1, 'old', 'Old', '2026-01-01',
+                     '{"詞彙": {"pinyin": "", "hsk_level": 0, "definition": ""}}');
+           INSERT INTO words VALUES (1, 1, '詞彙', '', '', 0, 1, '["詞彙很重要"]');
+           INSERT INTO words VALUES (2, 1, '小孩儿', '', '', 0, 1, '[]');"""
+    )
+    con.commit()
+    con.close()
+
+
+def test_old_episodes_pick_up_dictionary_improvements_when_opened(client):
+    _stale_episode()
+
+    words = {w["word"]: w for w in client.get("/episodes/1/words").json()}
+    assert words["詞彙"]["hsk_level"] == 6  # a Traditional word now resolves to its HSK level
+    assert words["詞彙"]["definition"].startswith("vocabulary")
+    assert words["詞彙"]["pinyin"] == "cí huì"
+    assert words["小孩儿"]["definition"] == "erhua variant of 小孩: child"  # was empty
+
+    lexicon = client.get("/episodes/1/transcript").json()["lexicon"]
+    assert lexicon["詞彙"]["hsk_level"] == 6 and lexicon["詞彙"]["definition"].startswith("vocabulary")
+    assert client.get("/episodes/1/export.csv").text.count("vocabulary") >= 1
+
+
+def test_the_refresh_happens_once_per_dictionary_version(client, monkeypatch):
+    _stale_episode()
+    client.get("/episodes/1/words")  # first open: refreshed
+
+    def boom(word):
+        raise AssertionError("looked a word up again")
+
+    monkeypatch.setattr(app_module, "get_definition", boom)
+    assert client.get("/episodes/1/words").status_code == 200  # no recomputation
+
+    stored = sqlite3.connect(app_module.DB_PATH).execute("select dict_version from episodes").fetchone()[0]
+    assert stored == app_module.DICT_VERSION
+
+
+def test_new_episodes_are_saved_at_the_current_dictionary_version(client):
+    eid = analyze(client)
+    stored = sqlite3.connect(app_module.DB_PATH).execute(
+        "select dict_version from episodes where id = ?", (eid,)
+    ).fetchone()[0]
+    assert stored == app_module.DICT_VERSION
+
+
+def test_old_episodes_with_a_transcript_are_re_segmented_when_opened(client, monkeypatch):
+    """Traditional text that an older version chopped into single characters."""
+    monkeypatch.setattr(app_module, "transcribe", lambda *a, **k: [Segment(0, 3, "我們學習詞彙。")])
+    eid = analyze(client)
+
+    con = sqlite3.connect(app_module.DB_PATH)
+    con.execute("UPDATE segments SET tokens = ?", (json.dumps(list("我們學習詞彙。"), ensure_ascii=False),))
+    con.execute("DELETE FROM words")
+    con.execute("UPDATE episodes SET dict_version = 0, lexicon = '{}'")
+    con.commit()
+    con.close()
+
+    data = client.get(f"/episodes/{eid}/transcript").json()
+    assert data["segments"][0]["tokens"] == ["我們", "學習", "詞彙", "。"]
+    assert data["lexicon"]["詞彙"]["hsk_level"] == 6
+    words = {w["word"]: w for w in client.get(f"/episodes/{eid}/words").json()}
+    assert words["詞彙"]["hsk_level"] == 6 and words["學習"]["hsk_level"] == 1
+    assert words["詞彙"]["contexts"] == ["我們學習詞彙。"]

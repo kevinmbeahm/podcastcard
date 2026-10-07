@@ -658,6 +658,30 @@
 
     .wp-def { font-size: 1rem; line-height: 1.5; margin-bottom: 12px; }
     .wp-def.muted { color: var(--text-muted); font-size: 0.9rem; }
+    .wp-def.auto { color: var(--text-muted); font-style: italic; }
+
+    .wp-note { font-size: 0.8rem; color: var(--text-muted); margin: -4px 0 10px; }
+    .wp-note .cjk { font-family: var(--cjk); font-size: 1rem; color: var(--text); }
+
+    .wp-full {
+      margin: 0 0 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .wp-full summary {
+      cursor: pointer;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 7px 10px;
+    }
+
+    .wp-reading { padding: 2px 12px 8px; }
+    .wp-reading-pinyin { color: var(--accent2); font-size: 0.9rem; font-weight: 600; }
+    .wp-reading ol { margin: 2px 0 0 1.2em; font-size: 0.85rem; line-height: 1.45; }
+    .wp-reading li { padding: 1px 0; }
 
     .wp-parts { list-style: none; margin-bottom: 12px; }
     .wp-parts li { font-size: 0.88rem; padding: 4px 0; border-bottom: 1px solid var(--border); }
@@ -951,6 +975,7 @@ const state = {
   tab: 'transcript',
   selected: null,
   hasAudio: false,
+  lookups: new Map(),  // word -> full dictionary entry (fetched on demand)
   playing: -1,         // index of the segment being spoken
   stopAt: null,        // pause here (play-one-sentence mode)
   sentenceStart: 0,
@@ -1171,6 +1196,7 @@ function selectWord(word) {
   });
   renderWordPanel();
   $('word-panel').classList.add('open');   // bottom sheet on narrow screens
+  fetchLookup(word).then(entry => { if (entry && state.selected === word) renderWordPanel(); });
 }
 
 function closePanelSheet() {
@@ -1186,17 +1212,11 @@ function renderWordPanel() {
     return;
   }
 
-  let meaning;
-  if (entry.definition) {
-    meaning = `<p class="wp-def">${escapeHtml(entry.definition)}</p>`;
-  } else if (entry.parts && entry.parts.length) {
-    meaning = `<p class="wp-def muted">No dictionary entry for this word. Character by character:</p>
-      <ul class="wp-parts">${entry.parts.map(p => `
-        <li><span class="cjk">${escapeHtml(p.char)}</span><span class="pin">${escapeHtml(p.pinyin)}</span>${escapeHtml(p.definition || '—')}</li>`).join('')}
-      </ul>`;
-  } else {
-    meaning = `<p class="wp-def muted">No dictionary entry.</p>`;
-  }
+  const detail = state.lookups.get(word);
+  const definition = (detail && detail.definition) || entry.definition;
+  const meaning = definition
+    ? `<p class="wp-def${definition.startsWith('literally:') ? ' auto' : ''}">${escapeHtml(definition)}</p>`
+    : `<p class="wp-def muted">No dictionary entry.</p>`;
 
   const occ = state.occurrences.get(word) || [];
   const shownOcc = occ.slice(0, 40);
@@ -1218,9 +1238,57 @@ function renderWordPanel() {
       ${'speechSynthesis' in window ? '<button class="speak" title="Listen">🔊</button>' : ''}
     </div>
     ${meaning}
+    ${fullEntryHtml(detail)}
     <div class="wp-panel-title">In this episode · ${occ.length}×</div>
     <ul class="sent-list">${sentences}</ul>
     ${occ.length > shownOcc.length ? `<div class="wp-hint">+ ${occ.length - shownOcc.length} more</div>` : ''}`;
+}
+
+/** Everything the dictionary knows: both scripts, every reading and meaning, and the parts. */
+function fullEntryHtml(d) {
+  if (!d) return '';
+  let html = '';
+
+  if (d.simplified && d.simplified !== d.word) {
+    html += `<div class="wp-note">Simplified: <span class="cjk">${escapeHtml(d.simplified)}</span></div>`;
+  } else if (d.traditional) {
+    html += `<div class="wp-note">Traditional: <span class="cjk">${escapeHtml(d.traditional)}</span></div>`;
+  }
+
+  const senseCount = d.readings.reduce((n, r) => n + r.senses.length, 0);
+  if (senseCount > 1 || d.readings.length > 1) {
+    const readings = d.readings.map(r => `
+      <div class="wp-reading">
+        <div class="wp-reading-pinyin">${escapeHtml(r.pinyin)}</div>
+        <ol>${r.senses.map(sense => `<li>${escapeHtml(sense)}</li>`).join('')}</ol>
+      </div>`).join('');
+    const summary = `All meanings (${senseCount}${d.readings.length > 1 ? `, ${d.readings.length} readings` : ''})`;
+    html += `<details class="wp-full"${senseCount <= 6 ? ' open' : ''}><summary>${summary}</summary>${readings}</details>`;
+  }
+
+  const partList = (title, items) => items.length ? `
+    <div class="wp-panel-title">${title}</div>
+    <ul class="wp-parts">${items.map(p => `
+      <li><span class="cjk">${escapeHtml(p.char || p.text)}</span><span class="pin">${escapeHtml(p.pinyin)}</span>${escapeHtml(p.definition || '—')}</li>`).join('')}
+    </ul>` : '';
+  const parts = d.components || [];
+  html += partList('Made up of', parts);
+  // a character already listed above as a part would just repeat itself
+  html += partList('Characters', (d.characters || []).filter(c => !parts.some(p => p.text === c.char)));
+  return html;
+}
+
+async function fetchLookup(word) {
+  if (state.lookups.has(word)) return state.lookups.get(word);
+  try {
+    const res = await fetch(`/lookup?word=${encodeURIComponent(word)}`);
+    if (!res.ok) return null;
+    const entry = await res.json();
+    state.lookups.set(word, entry);
+    return entry;
+  } catch (_) {
+    return null;  // offline: the panel keeps showing the stored definition
+  }
 }
 
 function speak(text) {
