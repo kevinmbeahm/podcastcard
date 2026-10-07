@@ -146,7 +146,16 @@ def run(
                 description=f"Transcribing with Whisper [{model}]…",
             )
 
-        segments = transcribe(audio_path, model_size=model, device=device, on_progress=on_transcribe)
+        def on_status(text: str, fraction: float | None = None) -> None:
+            progress.update(task, description=text, completed=(fraction or 0) * 100, total=100)
+
+        segments = transcribe(
+            audio_path,
+            model_size=model,
+            device=device,
+            on_progress=on_transcribe,
+            on_status=on_status,
+        )
 
     console.print(f"[green]✓[/green] Transcribed {len(segments)} segments.")
 

@@ -49,7 +49,7 @@ URL → audio.download_audio() → transcribe.transcribe() ─┬→ extract.ext
 | File | Responsibility |
 |------|----------------|
 | `src/audio.py` | `download_audio(url, output_dir, on_progress=None) -> str` (path to mp3) via yt-dlp; `on_progress(fraction)`; checks FFmpeg first; 30 s socket timeout |
-| `src/transcribe.py` | `transcribe(audio_path, model_size="base", device="auto", on_progress=None) -> list[Segment]` via faster-whisper; `on_progress(seconds_done, total_seconds)`; `auto` falls back to CPU (int8) if CUDA libs are missing; `model_is_cached()` / `loading_message()` say whether the first use will download the model |
+| `src/transcribe.py` | `transcribe(audio_path, model_size="base", device="auto", on_progress=None) -> list[Segment]` via faster-whisper; `on_progress(seconds_done, total_seconds)`, `on_status(text, fraction)` for model download/load/decode steps; `auto` falls back to CPU (int8) if CUDA libs are missing; `model_is_cached()` requires `model.bin`+`config.json`+`tokenizer.json` (an interrupted download doesn't count); a cached model loads with `local_files_only=True`; a missing one shows download progress measured from the HF cache folder |
 | `src/extract.py` | `extract_words(segments) -> list[WordOccurrence]`; jieba tokenize + dedup + filter; defines `Segment` and `WordOccurrence` dataclasses |
 | `src/dictionary.py` | `get_definition(word) -> str` — English gloss from CC-CEDICT (lazy-loaded; skips variant/abbr/surname stubs; prefers the reading matching pypinyin) |
 | `src/hsk.py` | `get_hsk_level(word) -> int` (0 = unknown), `get_pinyin(word) -> str`, `HSK_WORDS` dict |
@@ -162,6 +162,9 @@ python -m src serve                    # http://localhost:8000 (add --reload whe
   compounds made of known characters/words as known would fix it.
 - Whisper may emit Traditional characters for some audio; the HSK/CEDICT lookups are keyed on
   Simplified, so those words show as unknown.
-- The first run of each Whisper model size downloads it (tiny ≈75 MB … large-v2 ≈3 GB) with no
-  byte-level progress, only the message plus elapsed time.
+- The first run of each Whisper model size downloads it (tiny ≈75 MB … large-v2 ≈3 GB). Progress is
+  estimated from the size of the Hugging Face cache folder vs `MODEL_SIZE_MB` (approximate), and
+  assumes the default cache location layout `models--Systran--faster-whisper-<size>`.
+- `huggingface.co` is blocked in the Claude sandbox, so the real model download/load path can't
+  be exercised there; it is covered by unit tests with stand-ins only.
 - Transcription quality depends heavily on audio clarity and Whisper model size.

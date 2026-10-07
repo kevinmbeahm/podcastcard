@@ -16,7 +16,7 @@ def _stub_pipeline(monkeypatch):
     audio.download_audio = lambda url, out, on_progress=None: f"{out}/fake.mp3"
     audio.FFmpegNotFoundError = type("FFmpegNotFoundError", (RuntimeError,), {})
     transcribe = types.ModuleType("src.transcribe")
-    transcribe.transcribe = lambda path, model_size="base", device="auto", on_progress=None: [
+    transcribe.transcribe = lambda path, model_size="base", device="auto", on_progress=None, on_status=None: [
         Segment(0, 3, "我喜欢听中文播客，学习新的词汇。")
     ]
     transcribe.loading_message = lambda model: f"Loading Whisper model '{model}'…"

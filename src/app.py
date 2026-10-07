@@ -292,7 +292,7 @@ def _run_with_progress(
         if kind == "error":
             raise value
         if kind == "progress":
-            fraction = value if value is not None else fraction
+            fraction = value  # None means "unknown": show the animated bar again
             message = text or message
         yield event(fraction)
 
@@ -353,6 +353,11 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
             def run_whisper(report):
                 progress = _throttled(report)
 
+                def on_status(text: str, fraction: Optional[float] = None) -> None:
+                    if fraction is None:  # stage changes only; download ticks would flood the log
+                        log.info(text)
+                    report(fraction, text)
+
                 def on_transcribe(done: float, total: float) -> None:
                     progress(
                         done / total,
@@ -360,7 +365,12 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
                         f"({_fmt_clock(done)} of {_fmt_clock(total)})",
                     )
 
-                return transcribe(audio_path, model_size=model, on_progress=on_transcribe)
+                return transcribe(
+                    audio_path,
+                    model_size=model,
+                    on_progress=on_transcribe,
+                    on_status=on_status,
+                )
 
             segments = yield from _run_with_progress(
                 run_whisper, "transcribing", loading, started
