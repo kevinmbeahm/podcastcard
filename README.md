@@ -4,23 +4,22 @@
 
 ## Overview
 
-PodcastCard takes Mandarin podcast audio, generates a time-aligned transcript, then analyzes the transcript to:
+PodcastCard takes a link to a Mandarin podcast or video, downloads the audio, transcribes it locally with Whisper, and then:
 
-- extract words and multi-word phrases
-- annotate each token with pinyin, part-of-speech (optional), and HSK level
-- rank words and phrases by frequency and contextual usefulness
-- export study-ready outputs (CSV, Anki/flashcard-friendly formats, and time-stamped excerpts)
+- gives you the **full transcript**, where any word can be clicked for its pinyin, HSK level, definition and every sentence it appears in
+- extracts the **vocabulary**, organised by HSK level, each word keeping the sentences it came from
+- exports study material: CSV, **Anki decks**, and the transcript as `.txt` / `.vtt`
 
-The tool is intended for Mandarin learners and teachers who want targeted vocabulary study from authentic audio. 
+It is meant for learners who listen to authentic audio and want to look up exactly the words they didn't understand.
 
 ## Features
 
-- High-quality Mandarin transcription (local or cloud models supported)
-- Word/phrase extraction and frequency counts
-- HSK-level mapping (HSK 1–6 and optional extended lists)
-- Export: `words.csv`, `phrases.csv`, `transcript.vtt`, and optional Anki `.apkg` or CSV deck
-- Configurable filters: minimum frequency, part-of-speech filters, phrase length, context window
-- Batch processing for multiple episodes
+- Local Mandarin transcription (`faster-whisper`; no API key; falls back to CPU if GPU libraries are missing)
+- Click-to-define transcript reader with HSK-level highlighting (web app)
+- Word extraction with frequency counts, pinyin, English definitions and HSK levels 1–6, for Simplified *and* Traditional text
+- Export: `words.csv`, `transcript.txt`/`.vtt`, and an Anki `.apkg` deck
+- Keeps the audio, with a player that follows the transcript and plays any sentence on demand
+- Episode history, so earlier analyses reopen instantly
 
 ## Quick Start
 
@@ -28,7 +27,7 @@ Prerequisites:
 
 - Python 3.10+
 - FFmpeg (for audio decoding)
-- A speech model (e.g., Whisper family or cloud ASR key) — configurable in settings
+- Nothing else to configure: the Whisper model is downloaded automatically on first run
 
 Recommended install (example):
 
@@ -40,71 +39,101 @@ pip install -r requirements.txt
 
 ## Usage
 
-Basic CLI example:
+### Web app (recommended)
 
 ```bash
-podcastcard transcribe \\
-  --input episode01.mp3 \\
-  --output out/episode01 \\
-  --lang zh \\
-  --model small \\
-  --hsk-levels 1,2,3
+python -m src serve              # then open http://localhost:8000
 ```
 
-Options (common):
+Paste a podcast or video link (anything `yt-dlp` supports) and click **Analyze**. To do several at once,
+paste **one link per line**: the button becomes *Queue N videos* and they are processed one after another in
+the background. When a video finishes you get:
 
-- `--input`: path to audio file (mp3, m4a, wav, etc.) or directory for batch
-- `--output`: output directory
-- `--lang`: language code (default `zh`)
-- `--model`: transcription model or `auto` (local or cloud)
-- `--hsk-levels`: comma-separated HSK levels to emit or `all`
-- `--min-frequency`: filter words with frequency lower than this
-- `--export-anki`: produce an Anki-compatible deck (CSV or `.apkg`)
+- **Transcript tab** — the full time-coded transcript. Words at your selected HSK levels are
+  highlighted; click *any* word to see its pinyin, HSK level and definition, plus every sentence in
+  the episode where it appears (click a sentence to jump to it). 🔊 reads the word aloud using your
+  browser's Chinese voice. Download the transcript as `.txt` or `.vtt`.
+- **Full dictionary entry** for the word you click: every reading (行 is *xíng*, *háng* and *héng*) with all its meanings, the Simplified/Traditional form, and a character-by-character breakdown. Phrases that aren't dictionary entries (打篮球) are explained from their parts (*literally: 打 (to hit) + 篮球 (basketball)*), and rare characters are covered too.
+- **Audio player** (top of the page, stays pinned while you scroll) — the episode's audio is kept, so you can listen along. Click a timestamp to play from that line; the line being spoken is highlighted and the transcript follows along (switch off with *Follow along*). A ▶ button next to each example sentence plays just that sentence, in the word panel and the Vocabulary tab. *Download audio* saves the file.
+- **Vocabulary tab** — the words at the selected HSK levels, grouped by level, each with its
+  definition and example sentences. Export as **CSV** or as an **Anki deck**.
+- **HSK level chips** (top right) choose which levels are highlighted, listed and exported. Your
+  choice is remembered; the default is HSK 4–6.
+- **History** (left) reopens earlier episodes without re-processing.
 
-Example output files created in the `--output` folder:
+**The queue.** Each link becomes a job in a list under the form, with its own progress. You can close the tab
+and come back: the queue lives on the server (and survives a server restart, which simply starts the
+interrupted video again). *Cancel* stops a waiting or running video, *Retry* re-queues a failed or cancelled
+one, *Open* shows a finished episode, and *Clear finished* tidies the list. A failure in one video never stops
+the others. *Skip videos I have already analyzed* (on by default) leaves out links you have processed before.
+Videos are transcribed one at a time, because Whisper already uses all of your CPU or GPU. Playlist and channel
+links are refused with a message (paste the individual videos instead); a video link that mentions a playlist
+(`…watch?v=…&list=…`) processes just that video.
 
-- `transcript.vtt` — time-coded transcript
-- `words.csv` — columns: `word`, `pinyin`, `hsk_level`, `frequency`, `example_context`, `first_timestamp`
-- `phrases.csv` — extracted useful multi-word phrases with counts and timestamps
-- `anki_deck.csv` or `anki_deck.apkg` — flashcard-ready output
+**Where things are stored:** the database (`podcastcard.db`) and the audio files (`podcastcard_audio/`) are created in the folder you start the server from. A 30-minute episode is roughly 40 MB of audio. To keep the audio somewhere else, set `PODCASTCARD_AUDIO_DIR` before starting; to free space, delete files from that folder — the episode keeps its transcript and vocabulary, it just won't have a player.
+
+### Command line
+
+```bash
+python -m src run "https://example.com/episode" --model base --hsk-levels 4,5,6 --output ./output --anki
+
+# several videos, one after another (each gets its own folder: output/01-title, output/02-title, ...)
+python -m src run "https://example.com/ep1" "https://example.com/ep2" --output ./output
+python -m src run --file urls.txt --output ./output     # one link per line; blank lines and # comments are ignored
+```
+
+Options for `run`:
+
+- `--model`: Whisper model size — `tiny`, `base` (default), `small`, `medium`, `large-v2`
+- `--device`: `auto` (default; GPU if it works, otherwise CPU), `cpu`, or `cuda`
+- `--hsk-levels`: comma-separated levels to show/export, e.g. `4,5,6`; `0` is words not on any HSK list; default `all`
+- `--file`, `-f`: a text file of links (one per line) to process as a batch; can be combined with links on the command line
+- `--output`: output directory (default `./output`)
+- `--anki`: also write `anki_deck.apkg`
+
+Output in the `--output` folder:
+
+- the downloaded audio (`.mp3`), kept next to the other files
+- `transcript.txt` (with `[mm:ss]` markers) and `transcript.vtt` — the full transcript
+- `words.csv` — `word`, `pinyin`, `definition`, `hsk_level`, `frequency`, `contexts` (sentences joined with ` | `)
+- `anki_deck.apkg` — with `--anki`
+
+With more than one link, each video's files go in their own numbered folder, a failure in one video does not stop the rest, and a summary table is printed at the end (the exit code is 1 if any video failed).
+
+### Importing into Anki
+
+In Anki choose **File → Import** and pick the `.apkg`. Each word becomes one note
+(word + an example sentence on the front; pinyin, definition, more sentences and HSK level on
+the back), tagged `podcastcard` and `HSK<n>`. Notes are keyed by word, so importing another
+episode updates words you already have instead of duplicating them.
+
+Planned but not yet implemented: `phrases.csv`, `--min-frequency`, batch mode, audio clips on cards.
 
 ## How HSK mapping works
 
-PodcastCard includes a built-in HSK lexicon that maps common words and phrases to HSK levels 1–6. Behavior is configurable:
-
-- default mapping uses official HSK lists (and community extensions if enabled)
-- unknown words get `hsk_level = 0` (unlisted)
-- you can provide a custom mapping CSV for institutional vocab lists
-
-## Configuration
-
-Configuration can be provided via a YAML/JSON file or CLI flags. Typical config options:
-
-- `transcription.model` (string) — model name or API key
-- `analysis.min_frequency` (int)
-- `analysis.pos_filter` (list)
-- `output.formats` (list)
-- `hsk.mapping_path` (path)
-
-## Advanced usage
-
-- Batch mode: pass a folder to `--input` to process many episodes
-- SRS integration: export Anki-ready decks with sentence context and audio clips
-- Timestamped examples: include short audio clips per word for pronunciation practice
+`data/hsk_words.json` maps words to HSK levels 1–6 (Traditional words are looked up through their Simplified form). It is generated by `scripts/build_hsk_words.py` from the official HSK 2.0 lists, using HSK 3.0 levels 1–6 for words the 2.0 lists lack (such as 说 or 天; single characters only up to level 3, since higher ones are mostly parts of compounds like 入). Words in neither list get level 0 ("Non-HSK"), which includes names, slang, loanwords and many everyday compounds.
 
 ## Notes & Tips
 
-- Clean audio (good mic, low background noise) greatly improves transcription and word extraction quality.
-- For best results with learner-focused extraction, filter out proper nouns and high-frequency function words using `--min-frequency` and `--pos-filter`.
+- The first run of each Whisper model size downloads the model (`tiny` ≈75 MB, `base` ≈145 MB, `small` ≈480 MB, `medium` ≈1.5 GB, `large-v2` ≈3 GB). It uses almost no CPU while downloading, so that wait is normal; the page and terminal show elapsed time so you can tell it is still working.
+- Clean audio (good mic, low background noise) greatly improves transcription. `small` is noticeably more accurate than `base`; use `--device cpu` if you don't have a working CUDA setup.
+- Most jargon and names show up as *Non-HSK*. Switch that chip on in the web app when you want to see them.
 
 ## Contributing
 
-Contributions welcome: bug reports, additional HSK lists, improved phrase extraction heuristics, and Anki export templates.
+Contributions welcome: bug reports, better phrase extraction, and Anki card templates. Run the tests with `pip install -r requirements-dev.txt && pytest`.
+
+## Acknowledgements
+
+Anki decks are built with [genanki](https://github.com/kerrickstaley/genanki) (MIT).
+HSK word lists come from [complete-hsk-vocabulary](https://github.com/drkameleon/complete-hsk-vocabulary)
+(MIT), compiled into `data/hsk_words.json` by `scripts/build_hsk_words.py`.
+
+English definitions come from [CC-CEDICT](https://cc-cedict.org), licensed under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) (`data/cedict_ts.u8.gz`), and, for individual
+characters and the Traditional/Simplified mapping, from the Unicode Han Database
+(`data/unihan.json.gz`, © Unicode, Inc.; see `data/NOTICE-unihan.txt`).
 
 ## License
 
 See LICENSE (if included) or choose an appropriate license for your project.
-
----
-
-Want me to add a `requirements.txt`, a sample config, or an example CLI runner script next? Reply with which one and I'll add it.

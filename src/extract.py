@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-import jieba
-
+from .dictionary import get_definition, normalize
 from .hsk import get_hsk_level, get_pinyin
+from .segment import tokenize
 
 # Common single-character Mandarin function words to discard
 _FUNCTION_CHARS: frozenset[str] = frozenset(
@@ -26,7 +26,7 @@ def _is_noise(token: str) -> bool:
     if _PUNCT_RE.match(token):
         return True
     # Single character that is a known function word
-    if len(token) == 1 and token in _FUNCTION_CHARS:
+    if len(token) == 1 and normalize(token) in _FUNCTION_CHARS:  # 們/這/從 count too
         return True
     return False
 
@@ -44,11 +44,12 @@ class WordOccurrence:
     pinyin: str
     hsk_level: int
     contexts: list[str] = field(default_factory=list)
+    definition: str = ""
 
 
 def extract_words(segments: list[Segment]) -> list[WordOccurrence]:
     """
-    Tokenise each segment with jieba, deduplicate words, and return a
+    Tokenise each segment, deduplicate words, and return a
     list of WordOccurrence objects sorted by HSK level (unknown last).
     """
     # word -> list of context sentences
@@ -58,7 +59,7 @@ def extract_words(segments: list[Segment]) -> list[WordOccurrence]:
         sentence = seg.text.strip()
         if not sentence:
             continue
-        tokens = jieba.lcut(sentence, cut_all=False)
+        tokens = tokenize(sentence)
         seen_in_sentence: set[str] = set()
         for token in tokens:
             if _is_noise(token):
@@ -76,6 +77,7 @@ def extract_words(segments: list[Segment]) -> list[WordOccurrence]:
                 pinyin=get_pinyin(word),
                 hsk_level=get_hsk_level(word),
                 contexts=contexts,
+                definition=get_definition(word),
             )
         )
 
