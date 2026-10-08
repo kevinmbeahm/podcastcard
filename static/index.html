@@ -191,6 +191,7 @@
     .url-group { flex: 1; min-width: 260px; }
 
     input[type="text"],
+    textarea,
     select {
       background: var(--bg);
       border: 1px solid var(--border);
@@ -204,9 +205,33 @@
     }
 
     input[type="text"]:focus,
+    textarea:focus,
     select:focus {
       border-color: var(--accent);
     }
+
+    textarea {
+      display: block;
+      font-family: inherit;
+      line-height: 1.4;
+      min-height: 40px;
+      max-height: 160px;
+      resize: vertical;
+    }
+
+    .form-extras {
+      display: flex;
+      align-items: center;
+      gap: 6px 18px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+
+    .form-extras label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+    #form-note.error { color: var(--danger); }
+    .form-group .hint { color: var(--text-muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 
     select {
       cursor: pointer;
@@ -353,6 +378,110 @@
     }
 
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ------------------------------------------------------------------ Queue */
+    #running-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #queue-section {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+    }
+
+    .queue-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .queue-head h2 {
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    #queue-summary { color: var(--text); font-weight: 600; text-transform: none; letter-spacing: 0; margin-left: 6px; }
+
+    #queue-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      list-style: none;
+      max-height: 230px;
+      overflow-y: auto;
+    }
+
+    .job {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 2px 12px;
+      align-items: center;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .job-main { display: flex; align-items: center; min-width: 0; }
+
+    .job-title {
+      font-size: 0.88rem;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .job-status {
+      flex: none;
+      border-radius: 10px;
+      font-size: 0.66rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      margin-right: 8px;
+      padding: 1px 8px;
+      text-transform: uppercase;
+    }
+
+    .job-queued .job-status, .job-cancelled .job-status { background: var(--surface2); color: var(--text-muted); }
+    .job-running .job-status { background: var(--accent); color: #fff; }
+    .job-done .job-status, .job-skipped .job-status { background: #14532d; color: var(--success); }
+    .job-error .job-status { background: #7f1d1d; color: var(--danger); }
+    .job-running { border-color: var(--accent); }
+
+    .job-detail {
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .job-error .job-detail { color: var(--danger); white-space: normal; }
+
+    .job-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 6px; }
+
+    .job-actions button {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.75rem;
+      padding: 4px 10px;
+    }
+
+    .job-actions button:hover { border-color: var(--accent); }
 
     /* ------------------------------------------------------------------ Results */
     [hidden] { display: none !important; }
@@ -825,6 +954,7 @@
 
     @media (max-width: 540px) {
       .form-row { flex-direction: column; align-items: stretch; }
+      #queue-section { padding: 10px 14px; }
       #analyze-btn { width: 100%; }
       #results-section { padding: 0 14px 32px; }
     }
@@ -854,14 +984,14 @@
     <section id="form-section">
       <div class="form-row">
         <div class="form-group url-group">
-          <label for="url-input">Podcast / Video URL</label>
-          <input
-            type="text"
+          <label for="url-input">Podcast / video links <span class="hint">· one per line to queue several</span></label>
+          <textarea
             id="url-input"
+            rows="1"
             placeholder="https://www.youtube.com/watch?v=..."
             autocomplete="off"
             spellcheck="false"
-          />
+          ></textarea>
         </div>
 
         <div class="form-group">
@@ -877,10 +1007,15 @@
 
         <button id="analyze-btn">Analyze</button>
       </div>
+      <div class="form-extras">
+        <label><input type="checkbox" id="skip-existing" checked /> Skip videos I have already analyzed</label>
+        <span id="form-note" role="status"></span>
+      </div>
     </section>
 
     <!-- Progress -->
     <section id="progress-section">
+      <div id="running-title"></div>
       <div class="stages">
         <div class="stage-item" id="stage-downloading">Downloading</div>
         <div class="stage-item" id="stage-transcribing">Transcribing</div>
@@ -891,13 +1026,22 @@
       <div id="status-msg"><span class="spinner"></span>Starting…</div>
     </section>
 
+    <!-- Queue -->
+    <section id="queue-section" hidden>
+      <div class="queue-head">
+        <h2>Queue <span id="queue-summary"></span></h2>
+        <button class="btn-link" id="queue-clear" type="button">Clear finished</button>
+      </div>
+      <ul id="queue-list"></ul>
+    </section>
+
     <!-- Results -->
     <section id="results-section" class="visible">
       <!-- Empty state (shown before first analysis) -->
       <div id="empty-state">
         <div class="big-icon">🎙️</div>
         <h2>Ready to analyze</h2>
-        <p>Enter a podcast or YouTube URL above and click Analyze,<br>or pick an episode from the history.</p>
+        <p>Paste one or more podcast or YouTube links above (one per line) and click Analyze,<br>or pick an episode from the history.</p>
       </div>
 
       <!-- Populated once an episode is loaded -->
@@ -1475,55 +1619,235 @@ function setStatus(msg, hasSpinner = true) {
   $('status-msg').innerHTML = (hasSpinner ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
 }
 
-function doAnalyze() {
-  const url = $('url-input').value.trim();
-  if (!url) { $('url-input').focus(); return; }
+// The queue ---------------------------------------------------------------
+
+const STATUS_LABEL = { queued: 'Waiting', running: 'Running', done: 'Done', skipped: 'Already analyzed', error: 'Failed', cancelled: 'Cancelled' };
+const STAGE_LABEL = { downloading: 'Downloading', transcribing: 'Transcribing', extracting: 'Extracting' };
+const ACTIVE = new Set(['queued', 'running']);
+
+const jobState = {
+  jobs: [],
+  lastStatus: new Map(),   // job id -> status at the previous poll (to notice completions)
+  openWhenDone: null,      // a single link you just submitted opens by itself when it finishes
+  timer: null,
+};
+
+function shortUrl(url) {
+  const bare = url.replace(/^https?:\/\/(www\.)?/, '');
+  return bare.length > 72 ? bare.slice(0, 71) + '…' : bare;
+}
+
+function setFormNote(text, isError = false) {
+  const note = $('form-note');
+  note.textContent = text;
+  note.classList.toggle('error', isError);
+}
+
+function autoGrow() {
+  const box = $('url-input');
+  box.style.height = 'auto';
+  box.style.height = `${Math.min(box.scrollHeight + 2, 160)}px`;
+}
+
+/** How many links are in the box, to label the button ("Queue 3 videos"). */
+function linesInBox() {
+  return $('url-input').value.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).length;
+}
+
+function updateSubmitLabel() {
+  const n = linesInBox();
+  $('analyze-btn').textContent = n > 1 ? `Queue ${n} videos` : 'Analyze';
+}
+
+async function submitJobs() {
+  const text = $('url-input').value;
+  if (!text.trim()) { $('url-input').focus(); return; }
 
   $('analyze-btn').disabled = true;
-  $('progress-section').classList.add('visible');
-  resetStages();
-  setProgress(null);
-  setStatus('Connecting…');
-
-  const params = new URLSearchParams({ url, model: $('model-select').value });
-  const evtSrc = new EventSource(`/analyze/stream?${params}`);
-  const finish = () => { $('analyze-btn').disabled = false; evtSrc.close(); };
-
-  evtSrc.onmessage = async e => {
-    const { stage, message, result, progress, elapsed } = JSON.parse(e.data);
-
-    if (stage === 'error') {
-      setStatus(`Error: ${message}`, false);
-      STAGES.forEach(s => $(`stage-${s}`).classList.remove('active'));
-      $('stage-done').className = 'stage-item error';
-      finish();
+  setFormNote('');
+  try {
+    const res = await fetch('/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, model: $('model-select').value, skip_existing: $('skip-existing').checked }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setFormNote(data.detail || 'Could not queue those links.', true);
       return;
     }
 
-    setStage(stage);
-    setProgress(stage === 'done' ? 1 : progress);
-    const took = elapsed ? ` · ${formatTime(elapsed)} elapsed` : '';
-    setStatus(message + (stage === 'done' ? '' : took), stage !== 'done');
+    const added = data.jobs.filter(j => j.status === 'queued').length;
+    const skipped = data.jobs.filter(j => j.status === 'skipped').length;
+    const rejected = data.rejected || [];
+    const bad = rejected.filter(r => r.reason !== 'Already in the queue');
+    const duplicates = rejected.length - bad.length;
 
-    if (stage === 'done' && result) {
-      finish();
-      await loadEpisode(result.episode_id);
-      setTab('transcript');
-      loadEpisodes();   // refresh the history list
+    // Leave the lines that were not accepted in the box so they can be fixed.
+    $('url-input').value = bad.map(r => r.line).join('\n');
+    autoGrow();
+    updateSubmitLabel();
+
+    const parts = [];
+    if (added) parts.push(`${added} queued`);
+    if (skipped) parts.push(`${skipped} already analyzed`);
+    if (duplicates) parts.push(`${duplicates} already in the queue`);
+    if (bad.length) parts.push(`${bad.length} not a web link (left in the box)`);
+    setFormNote(parts.join(' · '), bad.length > 0 && added + skipped === 0);
+
+    if (data.jobs.length === 1 && !rejected.length) {
+      const only = data.jobs[0];
+      if (only.status === 'skipped') {          // nothing to wait for: just show it
+        await loadEpisode(only.episode_id);
+        setTab('transcript');
+      } else {
+        jobState.openWhenDone = only.id;        // a single video behaves as before
+      }
     }
-  };
+    await pollJobs();
+  } catch (_) {
+    setFormNote('Could not reach the server.', true);
+  } finally {
+    $('analyze-btn').disabled = false;
+  }
+}
 
-  evtSrc.onerror = () => {
-    setStatus('Connection error.', false);
-    finish();
-  };
+async function jobAction(id, action) {
+  try {
+    await fetch(`/jobs/${id}/${action}`, { method: 'POST' });
+  } catch (_) { /* the next poll shows what happened */ }
+  await pollJobs();
+}
+
+function jobRow(job, ahead) {
+  const title = job.title || shortUrl(job.url);
+  const label = job.status === 'running' ? (STAGE_LABEL[job.stage] || 'Running') : STATUS_LABEL[job.status];
+  let detail = job.message;
+  if (job.status === 'queued') {
+    detail = job.message || (ahead === 0 ? 'Next in line' : `Waiting · ${ahead} ahead`);
+  } else if (job.status === 'running' && job.elapsed) {
+    detail = `${job.message} · ${formatTime(job.elapsed)} elapsed`;
+  }
+
+  let actions = '';
+  if (ACTIVE.has(job.status)) actions = '<button data-act="cancel">Cancel</button>';
+  else if (job.status === 'error' || job.status === 'cancelled') actions = '<button data-act="retry">Retry</button>';
+  else if (job.episode_id) actions = '<button data-act="open">Open</button>';
+
+  return `
+    <li class="job job-${job.status}" data-id="${job.id}" data-episode="${job.episode_id || ''}">
+      <div class="job-main">
+        <span class="job-status">${escapeHtml(label)}</span>
+        <span class="job-title" title="${escapeHtml(job.url)}">${escapeHtml(title)}</span>
+      </div>
+      <div class="job-actions">${actions}</div>
+      <div class="job-detail" title="${escapeHtml(detail)}">${escapeHtml(detail)}</div>
+    </li>`;
+}
+
+function renderQueue() {
+  const jobs = jobState.jobs;
+  $('queue-section').hidden = jobs.length === 0;
+  if (!jobs.length) return;
+
+  const finished = jobs.filter(j => !ACTIVE.has(j.status)).length;
+  $('queue-summary').textContent = `${finished} of ${jobs.length} finished`;
+  $('queue-clear').hidden = finished === 0;
+
+  let waiting = jobs.some(j => j.status === 'running') ? 1 : 0;  // the running job is ahead of everyone
+  $('queue-list').innerHTML = jobs.map(job => {
+    const row = jobRow(job, job.status === 'queued' ? waiting : 0);
+    if (job.status === 'queued') waiting += 1;
+    return row;
+  }).join('');
+}
+
+/** The big progress strip follows whichever video is being processed right now. */
+function renderRunning() {
+  const running = jobState.jobs.find(j => j.status === 'running');
+  $('progress-section').classList.toggle('visible', Boolean(running));
+  if (!running) return;
+
+  const position = jobState.jobs.indexOf(running) + 1;
+  $('running-title').textContent =
+    (jobState.jobs.length > 1 ? `Video ${position} of ${jobState.jobs.length} · ` : '') + (running.title || shortUrl(running.url));
+  if (STAGES.includes(running.stage)) setStage(running.stage);
+  setProgress(running.progress);
+  const took = running.elapsed ? ` · ${formatTime(running.elapsed)} elapsed` : '';
+  setStatus(running.message + took, true);
+}
+
+function updateTabTitle() {
+  const active = jobState.jobs.filter(j => ACTIVE.has(j.status)).length;
+  const finished = jobState.jobs.length - active;
+  document.title = active ? `(${finished}/${jobState.jobs.length}) PodcastCard` : 'PodcastCard';
+}
+
+async function pollJobs() {
+  clearTimeout(jobState.timer);
+  let reachable = true;
+  try {
+    const res = await fetch('/jobs');
+    jobState.jobs = (await res.json()).jobs;
+  } catch (_) {
+    reachable = false;   // the server may be restarting: keep trying while we know work is pending
+  }
+
+  // Notice videos that finished since the last poll.
+  for (const job of jobState.jobs) {
+    const before = jobState.lastStatus.get(job.id);
+    if (job.status === 'done' && before && before !== 'done') {
+      loadEpisodes();
+      if (jobState.openWhenDone === job.id) {
+        jobState.openWhenDone = null;
+        await loadEpisode(job.episode_id);
+        setTab('transcript');
+      }
+    }
+    jobState.lastStatus.set(job.id, job.status);
+  }
+
+  renderQueue();
+  renderRunning();
+  updateTabTitle();
+
+  const pending = jobState.jobs.some(j => ACTIVE.has(j.status));
+  if (pending || !reachable) {
+    jobState.timer = setTimeout(pollJobs, reachable ? 1000 : 3000);
+  }
 }
 
 // -----------------------------------------------------------------------
 // Event wiring
 // -----------------------------------------------------------------------
-$('analyze-btn').addEventListener('click', doAnalyze);
-$('url-input').addEventListener('keydown', e => { if (e.key === 'Enter') doAnalyze(); });
+$('analyze-btn').addEventListener('click', submitJobs);
+$('url-input').addEventListener('input', () => { autoGrow(); updateSubmitLabel(); });
+$('url-input').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  // Enter submits a single link (as before); with several lines it adds a line, Ctrl/Cmd+Enter submits.
+  if (e.ctrlKey || e.metaKey || linesInBox() <= 1 && !$('url-input').value.includes('\n')) {
+    e.preventDefault();
+    submitJobs();
+  }
+});
+
+$('queue-list').addEventListener('click', async e => {
+  const button = e.target.closest('button[data-act]');
+  if (!button) return;
+  const row = button.closest('.job');
+  const id = Number(row.dataset.id);
+  if (button.dataset.act === 'open') {
+    await loadEpisode(Number(row.dataset.episode));
+    setTab('transcript');
+  } else {
+    await jobAction(id, button.dataset.act);
+  }
+});
+
+$('queue-clear').addEventListener('click', async () => {
+  try { await fetch('/jobs/clear', { method: 'POST' }); } catch (_) { /* ignore */ }
+  await pollJobs();
+});
 
 document.querySelector('.main-tabs').addEventListener('click', e => {
   const btn = e.target.closest('.main-tab');
@@ -1577,6 +1901,7 @@ for (const id of ['dl-csv', 'dl-anki']) {
 // Initial load
 buildLevelChips();
 loadEpisodes();
+pollJobs();   // shows the queue, and keeps following it if videos are still being processed
 </script>
 </body>
 </html>

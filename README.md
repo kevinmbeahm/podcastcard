@@ -45,7 +45,9 @@ pip install -r requirements.txt
 python -m src serve              # then open http://localhost:8000
 ```
 
-Paste a podcast or video URL (anything `yt-dlp` supports) and click **Analyze**. When it finishes you get:
+Paste a podcast or video link (anything `yt-dlp` supports) and click **Analyze**. To do several at once,
+paste **one link per line**: the button becomes *Queue N videos* and they are processed one after another in
+the background. When a video finishes you get:
 
 - **Transcript tab** — the full time-coded transcript. Words at your selected HSK levels are
   highlighted; click *any* word to see its pinyin, HSK level and definition, plus every sentence in
@@ -59,12 +61,25 @@ Paste a podcast or video URL (anything `yt-dlp` supports) and click **Analyze**.
   choice is remembered; the default is HSK 4–6.
 - **History** (left) reopens earlier episodes without re-processing.
 
+**The queue.** Each link becomes a job in a list under the form, with its own progress. You can close the tab
+and come back: the queue lives on the server (and survives a server restart, which simply starts the
+interrupted video again). *Cancel* stops a waiting or running video, *Retry* re-queues a failed or cancelled
+one, *Open* shows a finished episode, and *Clear finished* tidies the list. A failure in one video never stops
+the others. *Skip videos I have already analyzed* (on by default) leaves out links you have processed before.
+Videos are transcribed one at a time, because Whisper already uses all of your CPU or GPU. Playlist and channel
+links are refused with a message (paste the individual videos instead); a video link that mentions a playlist
+(`…watch?v=…&list=…`) processes just that video.
+
 **Where things are stored:** the database (`podcastcard.db`) and the audio files (`podcastcard_audio/`) are created in the folder you start the server from. A 30-minute episode is roughly 40 MB of audio. To keep the audio somewhere else, set `PODCASTCARD_AUDIO_DIR` before starting; to free space, delete files from that folder — the episode keeps its transcript and vocabulary, it just won't have a player.
 
 ### Command line
 
 ```bash
 python -m src run "https://example.com/episode" --model base --hsk-levels 4,5,6 --output ./output --anki
+
+# several videos, one after another (each gets its own folder: output/01-title, output/02-title, ...)
+python -m src run "https://example.com/ep1" "https://example.com/ep2" --output ./output
+python -m src run --file urls.txt --output ./output     # one link per line; blank lines and # comments are ignored
 ```
 
 Options for `run`:
@@ -72,6 +87,7 @@ Options for `run`:
 - `--model`: Whisper model size — `tiny`, `base` (default), `small`, `medium`, `large-v2`
 - `--device`: `auto` (default; GPU if it works, otherwise CPU), `cpu`, or `cuda`
 - `--hsk-levels`: comma-separated levels to show/export, e.g. `4,5,6`; `0` is words not on any HSK list; default `all`
+- `--file`, `-f`: a text file of links (one per line) to process as a batch; can be combined with links on the command line
 - `--output`: output directory (default `./output`)
 - `--anki`: also write `anki_deck.apkg`
 
@@ -81,6 +97,8 @@ Output in the `--output` folder:
 - `transcript.txt` (with `[mm:ss]` markers) and `transcript.vtt` — the full transcript
 - `words.csv` — `word`, `pinyin`, `definition`, `hsk_level`, `frequency`, `contexts` (sentences joined with ` | `)
 - `anki_deck.apkg` — with `--anki`
+
+With more than one link, each video's files go in their own numbered folder, a failure in one video does not stop the rest, and a summary table is printed at the end (the exit code is 1 if any video failed).
 
 ### Importing into Anki
 

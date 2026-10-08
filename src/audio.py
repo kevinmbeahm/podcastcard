@@ -7,6 +7,7 @@ import shutil
 from typing import Callable
 
 import yt_dlp
+from yt_dlp.utils import DownloadCancelled
 
 
 class FFmpegNotFoundError(RuntimeError):
@@ -27,10 +28,15 @@ def check_ffmpeg() -> None:
         raise FFmpegNotFoundError(_FFMPEG_HELP)
 
 
+class PlaylistLinkError(ValueError):
+    """The link is a playlist or channel, not a single video."""
+
+
 def download_audio(
     url: str,
     output_dir: str,
     on_progress: Callable[[float], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> str:
     """
     Download audio from *url* to *output_dir* and return the path to the
@@ -41,6 +47,9 @@ def download_audio(
 
     *on_progress*, if given, is called with the download fraction (0.0-1.0).
     It reaches 1.0 when the download ends, before the mp3 conversion starts.
+
+    *should_cancel*, if given, is checked while the file downloads; when it returns True the
+    download is abandoned and yt-dlp's ``DownloadCancelled`` is raised.
     """
     check_ffmpeg()
     os.makedirs(output_dir, exist_ok=True)
@@ -54,6 +63,8 @@ def download_audio(
             self.filepath: str | None = None
 
         def __call__(self, d: dict) -> None:
+            if should_cancel and should_cancel():
+                raise DownloadCancelled("Download cancelled.")
             if d["status"] == "downloading" and on_progress:
                 total = d.get("total_bytes") or d.get("total_bytes_estimate")
                 if total:
@@ -79,6 +90,8 @@ def download_audio(
         "progress_hooks": [hook],
         "quiet": True,
         "no_warnings": True,
+        # A video link that also names a playlist (watch?v=…&list=…) means just that video.
+        "noplaylist": True,
         # Fail (and retry) instead of waiting forever on a stalled connection.
         "socket_timeout": 30,
         "retries": 5,
@@ -106,3 +119,33 @@ def download_audio(
         raise FileNotFoundError(
             f"yt-dlp finished but could not locate the downloaded mp3 in {output_dir}"
         )
+
+
+def video_title(url: str) -> str:
+    """The title of the video at *url*, without downloading it.
+
+    Falls back to the URL itself if yt-dlp cannot say (offline, unsupported site, ...).
+    Raises :class:`PlaylistLinkError` if the link is a playlist or channel: downloading that
+    would fetch every video into one file and keep only the last.
+    """
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "extract_flat": "in_playlist",  # list a playlist's videos without opening each one
+        "socket_timeout": 30,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception:
+        return url
+    if not isinstance(info, dict):
+        return url
+    if info.get("_type") == "playlist" or "entries" in info:
+        raise PlaylistLinkError(
+            "This link is a playlist or channel, not a single video. "
+            "Paste the links of the individual videos instead."
+        )
+    return info.get("title") or url

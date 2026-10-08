@@ -11,12 +11,14 @@ sentence context each word appeared in. The goal: a learner can review high-leve
 vocabulary alongside the sentence it was used in.
 
 There are two ways to use it:
-- **CLI** (`python -m src run <url>`) — prints results to the terminal; writes the transcript
-  (`transcript.txt`/`.vtt`), `words.csv`, and optionally an Anki deck (`--anki`).
+- **CLI** (`python -m src run <url> [<url> ...] [--file urls.txt]`) — prints results to the terminal; writes the
+  transcript (`transcript.txt`/`.vtt`), `words.csv`, and optionally an Anki deck (`--anki`). Several URLs = a
+  batch: one numbered folder per video, failures don't stop the rest, summary table, exit code 1 if any failed.
 - **Web UI** (`python -m src serve`, i.e. uvicorn on `src.app:app`) — single-page app with live progress, a **Transcript** tab
   (full transcript; click any word for its definition and every sentence it appears in), a
   **Vocabulary** tab (words at the selected HSK levels with definitions and sentences, CSV and
-  Anki export), a pinned **audio player** (the audio is kept per episode; click a timestamp or a ▶
+  Anki export), a **queue** (paste several links, one per line: processed one after another in the
+  background, survives closing the tab or restarting the server), a pinned **audio player** (the audio is kept per episode; click a timestamp or a ▶
   to play, current line highlighted, optional follow-along), and episode history.
 
 ## Tech stack
@@ -54,7 +56,7 @@ URL → audio.download_audio() → transcribe.transcribe() ─┬→ extract.ext
 
 | File | Responsibility |
 |------|----------------|
-| `src/audio.py` | `download_audio(url, output_dir, on_progress=None) -> str` (path to mp3) via yt-dlp; `on_progress(fraction)`; checks FFmpeg first; 30 s socket timeout |
+| `src/audio.py` | `download_audio(url, output_dir, on_progress=None, should_cancel=None) -> str` (path to mp3) via yt-dlp; `on_progress(fraction)`; `should_cancel()` aborts a running download (raises yt-dlp's `DownloadCancelled` from the progress hook); `noplaylist` so a video link naming a playlist means that video; checks FFmpeg first; 30 s socket timeout. `video_title(url)` (title, or the URL if unknown) raises `PlaylistLinkError` for playlist/channel links |
 | `src/transcribe.py` | `transcribe(audio_path, model_size="base", device="auto", on_progress=None) -> list[Segment]` via faster-whisper; `on_progress(seconds_done, total_seconds)`, `on_status(text, fraction)` for model download/load/decode steps; `auto` falls back to CPU (int8) if CUDA libs are missing; `model_is_cached()` requires `model.bin`+`config.json`+`tokenizer.json` (an interrupted download doesn't count); a cached model loads with `local_files_only=True`; a missing one shows download progress measured from the HF cache folder; `transcribe_isolated(...)` runs the same thing in a fresh `spawn`ed child process (progress/status relayed over a queue, `should_cancel`, crash detection) — **the web app uses this** so no native Whisper state survives between jobs; the CLI calls `transcribe` directly |
 | `src/extract.py` | `extract_words(segments) -> list[WordOccurrence]`; jieba tokenize + dedup + filter; defines `Segment` and `WordOccurrence` dataclasses |
 | `src/dictionary.py` | CC-CEDICT + Unihan, Simplified **or Traditional** input. `normalize()` (trad→simp: whole-word CEDICT match, else per character), `simplify_characters()` (length-preserving), `get_definition(word)` — short gloss: real senses (skipping overlong explanations; reading matching pypinyin first) → follow "variant of / erhua variant of / see" to the target → Unihan for single characters → surname/abbreviation stub → for a phrase made of known words `literally: A (…) + B (…)` (most probable split by jieba frequency). `lookup(word)` — full entry: every reading with all senses, Simplified/Traditional form, `components`, per-`characters`. `DICT_VERSION` |
@@ -62,12 +64,13 @@ URL → audio.download_audio() → transcribe.transcribe() ─┬→ extract.ext
 | `src/hsk.py` | `get_hsk_level(word) -> int` (0 = unknown; Traditional words resolve via `normalize`), `get_pinyin(word) -> str`, `HSK_WORDS` dict |
 | `src/transcript.py` | `annotate(segments) -> (segments_with_tokens, lexicon)` (every Chinese token incl. rare CJK Extension A–G characters gets `lexicon_entry` = pinyin/HSK/definition), `has_cjk`, `format_vtt`, `format_text` |
 | `src/anki.py` | `write_apkg(words, path, deck_name, source)` via genanki; one note per word (stable GUID per word, so re-importing doesn't duplicate), best example sentence highlighted |
-| `src/cli.py` | Typer app; `run` command (`--model --device --hsk-levels --output --anki`); rich display, `words.csv`, `transcript.txt/.vtt` |
+| `src/jobs.py` | `JobQueue`: the batch queue. SQLite `jobs` table (queued → running → done / skipped / error / cancelled), one worker thread (`start()`/`stop()`), `enqueue` (dedupes links already waiting; `skip_existing` marks already-analysed ones `skipped`), `cancel` (waiting: immediate; running: flag checked between pipeline events, then the pipeline generator is closed, which stops the download/transcription), `retry`, `clear_finished`, `run_pending()` (what the worker loops on; tests call it directly). `parse_urls(text)`: http(s) links only, words around a link ignored, `#` comment lines, deduped; lines with no link are returned as `rejected` |
+| `src/cli.py` | Typer app; `run` command (`--file --model --device --hsk-levels --output --anki`; one URL = flat output, several = numbered folders + summary); rich display, `words.csv`, `transcript.txt/.vtt` |
 | `src/app.py` | FastAPI server; REST + SSE routes; SQLite persistence |
 | `src/__main__.py` | Entry point so `python -m src` runs the CLI |
 | `static/index.html` | Single-page UI (vanilla HTML/CSS/JS, no build step, no frameworks) |
 | `data/hsk_words.json` | `{word: hsk_level}` mapping (regenerate with `scripts/build_hsk_words.py`; don't hand-edit) |
-| `tests/` | pytest (`pip install -r requirements-dev.txt && pytest`): `test_vocab` (HSK/definitions/extraction), `test_transcript_anki`, `test_app` (API with stubbed pipeline + temp DB), `test_dictionary`, `test_segment`, `test_cli`, `test_transcribe` (CUDA fallback, model cache/download), `test_isolated` (real child processes; targets in `tests/_isolation_targets.py`) |
+| `tests/` | pytest (`pip install -r requirements-dev.txt && pytest`): `test_vocab` (HSK/definitions/extraction), `test_transcript_anki`, `test_app` (API with stubbed pipeline + temp DB), `test_dictionary`, `test_segment`, `test_jobs`, `test_audio`, `test_cli`, `test_transcribe` (CUDA fallback, model cache/download), `test_isolated` (real child processes; targets in `tests/_isolation_targets.py`) |
 
 ## Key data shapes
 
@@ -103,6 +106,11 @@ HSK level ascending, with unknown (level 0) words last.
   heartbeat every `HEARTBEAT_SECONDS` (2 s) — so a silent step (e.g. a first-use Whisper model
   download) still shows elapsed time instead of looking hung. Progress and errors are also
   logged to the server terminal (`uvicorn.error` logger).
+- `POST /jobs` (`{text, urls, model, skip_existing}`) queues links → `{jobs, rejected}` (422 if there is nothing
+  to queue or more than `MAX_BATCH`=200); `GET /jobs` → `{jobs}` in processing order; `POST /jobs/{id}/cancel`,
+  `POST /jobs/{id}/retry` (409 unless failed/cancelled), `POST /jobs/clear` (removes finished jobs). The page
+  polls `GET /jobs` once a second while anything is waiting or running. `/analyze` and `/analyze/stream` still
+  work for one-off use and take their turn via the same lock.
 - `GET /lookup?word=` — full dictionary entry (`dictionary.lookup`): readings with all senses, `simplified`/`traditional`, `components`, `characters`. Never errors for unknown text (empty entry). The word panel fetches it on click
 - `GET /episodes` — list past episodes
 - `GET /episodes/{id}/words?hsk_levels=4,5,6` — stored words (with definitions/contexts), optional level filter
@@ -113,11 +121,16 @@ HSK level ascending, with unknown (level 0) words last.
   (Anki returns 404 if no words match the levels)
 
 Routes are plain `def` (not `async`) because the pipeline blocks; FastAPI runs them in a thread pool.
+Only one analysis runs at a time: `_pipeline` takes `_analysis_lock` (yielding "Waiting for another analysis…"
+events while it waits) around `_run_pipeline`; the queue worker is just another caller. The worker thread is
+started by the app's lifespan (`jobs.start()`, which also re-queues jobs left `running` by a crash), so it does
+not run under `TestClient` unless used as a context manager — tests call `jobs.run_pending()` instead.
 Each transcription runs in its own child process (`transcribe_isolated`); closing the SSE
 stream sets `report.cancelled`, which terminates the child. `src/__main__.py` keeps its
 `if __name__ == "__main__"` guard because spawned children may re-import the main module.
 
-SQLite schema: `episodes(id, url UNIQUE, title, created_at, lexicon, audio_file, dict_version)`,
+SQLite schema: `jobs(id, url, model, status, stage, message, progress, elapsed, title, episode_id, created_at,
+started_at, finished_at)`, `episodes(id, url UNIQUE, title, created_at, lexicon, audio_file, dict_version)`,
 `words(id, episode_id, word, pinyin, definition, hsk_level, frequency, contexts)` where `contexts`
 is a JSON array stored as text, and `segments(id, episode_id, idx, start, end, text, tokens)`
 (`tokens` = JSON array). `lexicon` is a JSON object. Tokenisation and the lexicon are computed once
@@ -186,6 +199,10 @@ python -m src serve                    # http://localhost:8000 (add --reload whe
   7–9 band is not represented (those words are level 0). A `--standard` option would be a
   natural extension. A genuinely stand-alone character that only HSK 3.0 levels 4–6 lists (e.g. 将)
   is therefore "Non-HSK"; 450 single characters at levels 4–6 remain, all from the official 2.0 list.
+- Batches: no playlist/channel expansion (those links are refused: a 500-video playlist would silently queue
+  days of work); one video at a time; a job's title is only known once it starts transcribing; progress is
+  polled once a second rather than pushed; link validation and yt-dlp's real behaviour on playlists could only
+  be tested against stand-ins in the Claude sandbox (YouTube is blocked there).
 - Audio is never deleted automatically (~40 MB per 30 min episode at the default 192 kbps); there
   is no "delete episode" yet.
 - Automated tests stub the download/Whisper steps. The browser reader was checked with

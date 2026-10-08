@@ -11,13 +11,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.app as app_module
+from src.audio import PlaylistLinkError  # noqa: F401  (also reachable as app_module.PlaylistLinkError)
 from src.extract import Segment
 
 URL = "https://example.com/ep1"
 AUDIO = bytes(range(256)) * 40  # 10,240 bytes of recognisable fake audio
 
 
-def fake_download(url, out, on_progress=None):
+def fake_download(url, out, on_progress=None, **_):
     path = os.path.join(out, "x.mp3")
     with open(path, "wb") as fh:
         fh.write(AUDIO)
@@ -96,7 +97,7 @@ def test_stream_emits_stages_then_done(client):
 
 
 def test_stream_reports_download_errors(client, monkeypatch):
-    def boom(url, out, on_progress=None):
+    def boom(url, out, on_progress=None, **_):
         raise RuntimeError("no network")
 
     monkeypatch.setattr(app_module, "download_audio", boom)
@@ -178,7 +179,7 @@ def _events(client, **params):
 
 
 def test_stream_reports_download_and_transcription_progress(client, monkeypatch):
-    def download(url, out, on_progress=None):
+    def download(url, out, on_progress=None, **_):
         on_progress(0.5)
         on_progress(1.0)
         return fake_download(url, out)
@@ -269,7 +270,7 @@ def test_audio_lives_in_a_folder_next_to_the_database(client, tmp_path):
 def test_reanalysing_replaces_the_audio_instead_of_piling_up_copies(client, monkeypatch, tmp_path):
     eid = analyze(client)
 
-    def newer(url, out, on_progress=None):
+    def newer(url, out, on_progress=None, **_):
         path = os.path.join(out, "again.mp3")
         with open(path, "wb") as fh:
             fh.write(b"NEWER-AUDIO")
@@ -434,3 +435,169 @@ def test_episodes_stored_with_the_bare_character_levels_are_corrected_when_opene
     assert "入" not in words  # no longer a card under the HSK 4-6 filter
     lexicon = client.get(f"/episodes/{eid}/transcript").json()["lexicon"]
     assert lexicon["入"]["hsk_level"] == 0
+
+
+# ---------------------------------------------------------------- batches (the job queue)
+
+LINKS = ["https://example.com/a", "https://example.com/b", "https://example.com/c"]
+
+
+def test_a_pasted_list_of_links_is_queued_and_processed_in_the_background(client):
+    r = client.post("/jobs", json={"text": "\n".join(LINKS[:2]) + "\n# a note\n" + LINKS[2]})
+    assert r.status_code == 200
+    assert [j["url"] for j in r.json()["jobs"]] == LINKS
+    assert {j["status"] for j in r.json()["jobs"]} == {"queued"}
+
+    assert app_module.jobs.run_pending() == 3  # what the background worker does on its own
+    listed = client.get("/jobs").json()["jobs"]
+    assert [j["status"] for j in listed] == ["done"] * 3
+    assert all(j["episode_id"] and j["title"] == "测试 Episode: one" for j in listed)
+    assert len(client.get("/episodes").json()) == 3
+    assert client.get(f"/episodes/{listed[0]['episode_id']}/transcript").json()["segments"]
+
+
+def test_links_can_also_be_sent_as_a_list_and_the_model_is_remembered(client):
+    r = client.post("/jobs", json={"urls": LINKS[:1], "model": "small"})
+    assert r.json()["jobs"][0]["model"] == "small"
+
+
+def test_bad_lines_are_reported_but_do_not_block_the_good_ones(client):
+    r = client.post("/jobs", json={"text": f"ftp://example.com/x\nnot a link\n{LINKS[0]}\n{LINKS[0]}"})
+    body = r.json()
+    assert [j["url"] for j in body["jobs"]] == [LINKS[0]]  # the duplicate collapsed
+    assert [x["line"] for x in body["rejected"]] == ["ftp://example.com/x", "not a link"]
+
+
+def test_nothing_to_queue_is_an_error_but_only_bad_links_are_just_reported(client):
+    assert client.post("/jobs", json={"text": "  \n# nothing here"}).status_code == 422
+    r = client.post("/jobs", json={"text": "ftp://example.com/x"})
+    assert r.status_code == 200 and r.json()["jobs"] == [] and r.json()["rejected"]
+
+
+def test_there_is_a_limit_on_how_many_links_can_be_queued_at_once(client, monkeypatch):
+    monkeypatch.setattr(app_module, "MAX_BATCH", 2)
+    assert client.post("/jobs", json={"text": "\n".join(LINKS)}).status_code == 422
+
+
+def test_already_analyzed_videos_are_skipped_unless_asked_otherwise(client):
+    eid = analyze(client)  # URL is https://example.com/ep1
+    skipped = client.post("/jobs", json={"text": URL}).json()["jobs"][0]
+    assert (skipped["status"], skipped["episode_id"]) == ("skipped", eid)
+    again = client.post("/jobs", json={"text": URL, "skip_existing": False}).json()["jobs"][0]
+    assert again["status"] == "queued"
+
+
+def test_one_failing_video_is_reported_and_can_be_retried(client, monkeypatch):
+    real = app_module.download_audio
+
+    def flaky(url, out, on_progress=None, **kw):
+        if url == LINKS[1]:
+            raise RuntimeError("video unavailable")
+        return real(url, out, on_progress, **kw)
+
+    monkeypatch.setattr(app_module, "download_audio", flaky)
+    client.post("/jobs", json={"text": "\n".join(LINKS)})
+    app_module.jobs.run_pending()
+    jobs = client.get("/jobs").json()["jobs"]
+    assert [j["status"] for j in jobs] == ["done", "error", "done"]
+    assert jobs[1]["message"] == "Download failed: video unavailable"
+
+    monkeypatch.setattr(app_module, "download_audio", real)
+    assert client.post(f"/jobs/{jobs[1]['id']}/retry").json()["status"] == "queued"
+    app_module.jobs.run_pending()
+    assert client.get("/jobs").json()["jobs"][1]["status"] == "done"
+
+
+def test_a_playlist_link_fails_with_a_helpful_message(client, monkeypatch):
+    def playlist(url):
+        raise app_module.PlaylistLinkError("This link is a playlist or channel, not a single video.")
+
+    monkeypatch.setattr(app_module, "_fetch_video_title", playlist)
+    client.post("/jobs", json={"text": LINKS[0]})
+    app_module.jobs.run_pending()
+    job = client.get("/jobs").json()["jobs"][0]
+    assert job["status"] == "error" and "playlist or channel" in job["message"]
+
+
+def test_cancel_retry_and_clear_endpoints(client):
+    ids = [j["id"] for j in client.post("/jobs", json={"text": "\n".join(LINKS[:2])}).json()["jobs"]]
+    assert client.post(f"/jobs/{ids[0]}/cancel").json()["status"] == "cancelled"
+    assert client.post(f"/jobs/{ids[0]}/retry").json()["status"] == "queued"
+    assert client.post(f"/jobs/{ids[1]}/retry").status_code == 409  # still waiting
+    assert client.post("/jobs/999/cancel").status_code == 404
+    assert client.post("/jobs/999/retry").status_code == 404
+
+    app_module.jobs.run_pending()
+    assert client.post("/jobs/clear").json() == {"cleared": 2}
+    assert client.get("/jobs").json() == {"jobs": []}
+
+
+def test_the_job_title_is_known_while_the_video_is_still_being_transcribed(client):
+    client.post("/jobs", json={"text": LINKS[0]})
+    seen = []
+    real = app_module._run_pipeline
+
+    def watching(url, model):
+        for event in real(url, model):
+            yield event
+            seen.append(client.get("/jobs").json()["jobs"][0])
+
+    app_module._run_pipeline = watching
+    try:
+        app_module.jobs.run_pending()
+    finally:
+        app_module._run_pipeline = real
+    live = [j for j in seen if j["stage"] == "transcribing" and j["status"] == "running"]
+    assert live and live[-1]["title"] == "测试 Episode: one"
+
+
+def test_only_one_analysis_runs_at_a_time(monkeypatch):
+    monkeypatch.setattr(app_module, "HEARTBEAT_SECONDS", 0.05)
+
+    def endless(url, model):
+        while True:
+            yield {"stage": "transcribing", "message": f"working on {url}"}
+
+    monkeypatch.setattr(app_module, "_run_pipeline", endless)
+    first = app_module._pipeline("first", "base")
+    assert next(first)["message"] == "working on first"  # holds the lock now
+
+    second = app_module._pipeline("second", "base")
+    assert next(second)["message"] == "Waiting for another analysis to finish…"
+    assert next(second)["message"] == "Waiting for another analysis to finish…"
+
+    first.close()  # the first one is cancelled or finished: the lock is released
+    assert next(second)["message"] == "working on second"
+    second.close()
+    assert app_module._analysis_lock.acquire(blocking=False)  # nothing is left holding it
+    app_module._analysis_lock.release()
+
+
+def test_cancelling_a_running_video_really_stops_its_transcription(client, monkeypatch):
+    """The whole chain: cancel -> queue -> pipeline closed -> transcription told to stop."""
+    import threading
+    import time
+
+    monkeypatch.setattr(app_module, "HEARTBEAT_SECONDS", 0.05)
+    stopped = threading.Event()
+    calls = []
+
+    def transcribe(path, model_size="base", should_cancel=None, **_):
+        calls.append(path)
+        if len(calls) > 1:  # the second video transcribes normally
+            return [Segment(0, 1, "你好")]
+        while not should_cancel():  # the first one runs until it is told to stop
+            time.sleep(0.01)
+        stopped.set()  # the real one terminates its child process here
+        raise RuntimeError("cancelled")
+
+    monkeypatch.setattr(app_module, "transcribe", transcribe)
+    first = client.post("/jobs", json={"text": f"{LINKS[0]}\n{LINKS[1]}"}).json()["jobs"][0]
+    threading.Timer(0.4, lambda: client.post(f"/jobs/{first['id']}/cancel")).start()
+
+    started = time.monotonic()
+    app_module.jobs.run_pending()
+
+    assert stopped.wait(2), "transcription was never told to stop"
+    assert time.monotonic() - started < 10
+    assert [j["status"] for j in client.get("/jobs").json()["jobs"]] == ["cancelled", "done"]

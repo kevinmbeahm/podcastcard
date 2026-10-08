@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Generator, Iterator, Optional, TypeVar
@@ -30,16 +31,18 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Allow imports from project root when run via uvicorn src.app:app
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from src.anki import write_apkg
 from src.dictionary import DICT_VERSION, get_definition, lookup
-from src.audio import download_audio
+from src.audio import PlaylistLinkError, download_audio, video_title  # noqa: F401
 from src.extract import Segment, extract_words
 from src.hsk import get_hsk_level, get_pinyin
+from src.jobs import MAX_BATCH, JobQueue, parse_urls
+from src.jobs import SCHEMA as JOBS_SCHEMA
 from src.transcribe import loading_message
 from src.transcribe import transcribe_isolated as transcribe
 from src.transcript import annotate, format_text, format_vtt, lexicon_entry
@@ -134,9 +137,9 @@ def _episode_audio_path(episode: sqlite3.Row) -> Path | None:
 
 
 def _get_db() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=30)  # the queue's worker and the page both write
     con.row_factory = sqlite3.Row
-    con.executescript(_SCHEMA)
+    con.executescript(_SCHEMA + JOBS_SCHEMA)
     for table, column, ddl in _MIGRATIONS:
         cols = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
@@ -149,7 +152,14 @@ def _get_db() -> sqlite3.Connection:
 # App
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="PodcastCard", version="2.1.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    jobs.start()  # picks up anything left queued (or interrupted) when the server last stopped
+    yield
+    jobs.stop()
+
+
+app = FastAPI(title="PodcastCard", version="2.2.0", lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
@@ -305,16 +315,8 @@ def _download_headers(episode_id: int, title: str, ext: str) -> dict[str, str]:
 
 
 def _fetch_video_title(url: str) -> str:
-    """Try to get the video/podcast title from yt-dlp without downloading."""
-    try:
-        import yt_dlp
-
-        ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info.get("title") or url
-    except Exception:
-        return url
+    """The video's title (or the URL if unknown); raises for a playlist or channel link."""
+    return video_title(url)
 
 
 def _save_episode(
@@ -429,7 +431,33 @@ def _throttled(report: Callable[..., None], step: float = 0.01) -> Callable[[flo
     return inner
 
 
+def _tag_events(events: Generator[dict, None, T], **fields) -> Generator[dict, None, T]:
+    """Add *fields* to every event of a progress generator; its return value passes through."""
+    while True:
+        try:
+            event = next(events)
+        except StopIteration as stop:
+            return stop.value
+        event.update(fields)
+        yield event
+
+
+# Analysing is heavy (a model in memory, every CPU core), so only one runs at a time.
+# The queue's worker and the one-off /analyze endpoints take turns.
+_analysis_lock = threading.Lock()
+
+
 def _pipeline(url: str, model: str) -> Iterator[dict]:
+    """One analysis at a time: a caller that arrives while another is running waits its turn."""
+    while not _analysis_lock.acquire(timeout=HEARTBEAT_SECONDS):
+        yield {"stage": "downloading", "message": "Waiting for another analysis to finish…", "elapsed": 0}
+    try:
+        yield from _run_pipeline(url, model)
+    finally:
+        _analysis_lock.release()
+
+
+def _run_pipeline(url: str, model: str) -> Iterator[dict]:
     """Download → transcribe → extract → save, yielding progress events.
 
     Events are ``{"stage", "message", "progress"?, "elapsed"?}``; the last is either
@@ -440,7 +468,7 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
     yield {"stage": "downloading", "message": "Fetching audio…", "elapsed": 0}
 
     audio_file = ""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         try:
 
             def download(report):
@@ -456,7 +484,9 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
                     )
                     progress(fraction, text)
 
-                return title, download_audio(url, tmp, on_progress=on_download)
+                return title, download_audio(
+                    url, tmp, on_progress=on_download, should_cancel=report.cancelled.is_set
+                )
 
             title, audio_path = yield from _run_with_progress(
                 download, "downloading", "Looking up the video…", started
@@ -494,8 +524,8 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
                     should_cancel=report.cancelled.is_set,
                 )
 
-            segments = yield from _run_with_progress(
-                run_whisper, "transcribing", loading, started
+            segments = yield from _tag_events(
+                _run_with_progress(run_whisper, "transcribing", loading, started), title=title
             )
         except Exception as exc:
             log.exception("Transcription failed for %s", url)
@@ -508,7 +538,12 @@ def _pipeline(url: str, model: str) -> Iterator[dict]:
             # The audio is a convenience: don't throw the analysis away if it can't be kept.
             log.exception("Could not keep the audio for %s", url)
 
-    yield {"stage": "extracting", "message": "Extracting Chinese vocabulary…", "elapsed": round(time.monotonic() - started)}
+    yield {
+        "stage": "extracting",
+        "message": "Extracting Chinese vocabulary…",
+        "elapsed": round(time.monotonic() - started),
+        "title": title,
+    }
     try:
         # Every word is stored: the HSK filter is applied when viewing/exporting.
         words = _word_rows(segments)
@@ -578,6 +613,64 @@ def analyze_stream(url: str = Query(...), model: str = Query(default="base")):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Batches: the job queue
+# ---------------------------------------------------------------------------
+
+# A lambda for the pipeline, so it is looked up at call time (tests replace _pipeline's parts).
+jobs = JobQueue(connect=lambda: _get_db(), pipeline=lambda url, model: _pipeline(url, model))
+
+
+class JobsRequest(BaseModel):
+    text: str = ""  # pasted links, one per line
+    urls: list[str] = []
+    model: str = Field(default="base", max_length=100)
+    skip_existing: bool = True
+
+
+@app.post("/jobs")
+def create_jobs(req: JobsRequest):
+    """Queue one or more videos for analysis. They are processed in order, in the background."""
+    urls, rejected = parse_urls([req.text, *req.urls])
+    if not urls and not rejected:
+        raise HTTPException(status_code=422, detail="No links found")
+    if len(urls) > MAX_BATCH:
+        raise HTTPException(status_code=422, detail=f"Please queue at most {MAX_BATCH} links at a time")
+    queued = jobs.enqueue(urls, req.model, req.skip_existing)
+    return {"jobs": queued["jobs"], "rejected": rejected + queued["rejected"]}
+
+
+@app.get("/jobs")
+def list_jobs():
+    """The queue: waiting, running and finished jobs, in processing order."""
+    return {"jobs": jobs.list_jobs()}
+
+
+@app.post("/jobs/clear")
+def clear_jobs():
+    """Remove finished jobs from the list."""
+    return {"cleared": jobs.clear_finished()}
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: int):
+    job = jobs.cancel(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/jobs/{job_id}/retry")
+def retry_job(job_id: int):
+    try:
+        job = jobs.retry(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @app.get("/lookup")
