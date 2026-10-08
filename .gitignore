@@ -1,6 +1,9 @@
 .claude/
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
 podcastcard.db
 output/
 podcastcard_audio/
